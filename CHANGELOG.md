@@ -6,7 +6,8 @@
 - **Now Playing** — fixed an error when opening or reopening the full player with a track already loaded.
 - **In-app USB exclusive routing:** Flick claims the DAC for direct playback without requiring Android's global USB routing setting. Android gets the interfaces back after the stream has stopped.
 - **USB reconnect:** Playback can resume from the retained position on the same verified DAC. Manual pause, pause-on-connect, failed volume checks, and an unverified DAC keep it paused.
-- **Direct USB on high-speed DACs:** PCM at a 125 µs service interval uses a shorter transfer queue to address stalls observed on the OnePlus 15 and iBasso DC04U. Packet validation and timeout handling remain strict.
+- **Direct USB on high-speed DACs:** PCM at a 125 µs service interval uses a shorter transfer queue to address stalls observed on the OnePlus 15 and iBasso DC04U.
+- **USB DAC playback establishment** — a completed isochronous packet whose length differs from the exact submitted schedule is now accepted when it is a legal size for the service interval (for example the 20/24-byte alternation at 44.1 kHz). Short or zero-length completions are counted and logged instead of aborting the stream, so a host controller that repacketises a URB or a DAC that applies FIFO backpressure no longer forces a fallback to ExoPlayer. Error statuses, non-frame-aligned lengths, lengths outside the legal envelope, packet-count changes, and a transfer total above the submitted bytes are still refused.
 
 ## 0.23.3-beta.5 (2026-11-20)
 
