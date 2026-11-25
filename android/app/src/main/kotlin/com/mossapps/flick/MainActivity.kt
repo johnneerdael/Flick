@@ -71,11 +71,8 @@ import androidx.documentfile.provider.DocumentFile
 import com.mossapps.flick.audiofx.JustAudioProcessingController
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.embedding.engine.FlutterEngineCache
-import io.flutter.embedding.engine.dart.DartExecutor
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
-import io.flutter.plugins.GeneratedPluginRegistrant
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -97,7 +94,6 @@ import kotlin.math.min
 
 class MainActivity: FlutterActivity() {
     private val CHANNEL = "com.mossapps.flick/storage"
-    private val PLAYER_CHANNEL = "com.mossapps.flick/player"
     private val INTEGRATION_CHANNEL = "com.mossapps.flick/integration"
     private val UAC2_CHANNEL = "com.mossapps.flick/uac2"
     private val AUDIO_DEVICE_CHANNEL = "com.mossapps.flick/audio_device"
@@ -132,7 +128,6 @@ class MainActivity: FlutterActivity() {
     private val promptedUsbPermissionDeviceNames = mutableSetOf<String>()
     private var uac2DeviceCache: List<Map<String, Any?>>? = null
     private var uac2Channel: MethodChannel? = null
-    private var playerChannel: MethodChannel? = null
     private var audioDeviceChannel: MethodChannel? = null
     private val activeDirectUsbDeviceName: String?
         get() = if (directUsbReleasePending) null else directUsbConnection?.deviceName
@@ -210,21 +205,12 @@ class MainActivity: FlutterActivity() {
     }
 
     override fun provideFlutterEngine(context: android.content.Context): FlutterEngine? {
-        var engine = FlutterEngineCache.getInstance().get("main_engine")
-        if (engine == null) {
-            engine = FlutterEngine(context.applicationContext)
-            ensurePluginsRegistered(engine)
-            engine.dartExecutor.executeDartEntrypoint(
-                DartExecutor.DartEntrypoint.createDefault()
-            )
-            FlutterEngineCache.getInstance().put("main_engine", engine)
-        }
-        return engine
+        return FlickEngine.ensure(context)
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
-        // Idempotent: cached engines skip duplicate GeneratedPluginRegistrant.
-        ensurePluginsRegistered(flutterEngine)
+        // Idempotent: an engine FlickEngine already prepared is left alone.
+        FlickEngine.prepare(applicationContext, flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "openDocumentTree" -> {
@@ -691,147 +677,8 @@ class MainActivity: FlutterActivity() {
             }
         )
 
-        // Cache the Flutter engine for notification service to use
-        // Engine is already cached in provideFlutterEngine
-        
-        // Player channel for notification control
-        playerChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PLAYER_CHANNEL)
-        playerChannel?.setMethodCallHandler { call, result ->
-            when (call.method) {
-                "showNotification" -> {
-                    val title = call.argument<String>("title")
-                    val artist = call.argument<String>("artist")
-                    val albumArtPath = call.argument<String>("albumArtPath")
-                    val isPlaying = call.argument<Boolean>("isPlaying") ?: true
-                    // Handle both Integer and Long types from Flutter
-                    val duration = when (val d = call.argument<Any>("duration")) {
-                        is Long -> d
-                        is Int -> d.toLong()
-                        else -> 0L
-                    }
-                    val position = when (val p = call.argument<Any>("position")) {
-                        is Long -> p
-                        is Int -> p.toLong()
-                        else -> 0L
-                    }
-                    val isShuffle = call.argument<Boolean>("isShuffle") ?: false
-                    val isFavorite = call.argument<Boolean>("isFavorite") ?: false
-                    val color = call.argument<Any>("color")?.let { c ->
-                        when (c) {
-                            is Int -> c
-                            is Long -> c.toInt()
-                            else -> null
-                        }
-                    }
-                    val isCasting = call.argument<Boolean>("isCasting") ?: false
-                    val castDeviceName = call.argument<String>("castDeviceName")
-                    val castVolume = call.argument<Int>("castVolume")
-
-                    val intent = Intent(this, MusicNotificationService::class.java).apply {
-                        putExtra("title", title)
-                        putExtra("artist", artist)
-                        putExtra("albumArtPath", albumArtPath)
-                        putExtra("isPlaying", isPlaying)
-                        putExtra("duration", duration)
-                        putExtra("position", position)
-                        putExtra("isShuffle", isShuffle)
-                        putExtra("isFavorite", isFavorite)
-                        putExtra("isCasting", isCasting)
-                        castDeviceName?.let { putExtra("castDeviceName", it) }
-                        castVolume?.let { putExtra("castVolume", it) }
-                        color?.let { putExtra("color", it) }
-                    }
-                    
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        startForegroundService(intent)
-                    } else {
-                        startService(intent)
-                    }
-                    result.success(null)
-                }
-                "updateNotification" -> {
-                    val title = call.argument<String>("title")
-                    val artist = call.argument<String>("artist")
-                    val albumArtPath = call.argument<String>("albumArtPath")
-                    val isPlaying = call.argument<Boolean>("isPlaying")
-                    // Handle both Integer and Long types from Flutter
-                    val duration = call.argument<Any>("duration")?.let { d ->
-                        when (d) {
-                            is Long -> d
-                            is Int -> d.toLong()
-                            else -> null
-                        }
-                    }
-                    val position = call.argument<Any>("position")?.let { p ->
-                        when (p) {
-                            is Long -> p
-                            is Int -> p.toLong()
-                            else -> null
-                        }
-                    }
-                    val isShuffle = call.argument<Boolean>("isShuffle")
-                    val isFavorite = call.argument<Boolean>("isFavorite")
-                    val color = call.argument<Any>("color")?.let { c ->
-                        when (c) {
-                            is Int -> c
-                            is Long -> c.toInt()
-                            else -> null
-                        }
-                    }
-                    val isCasting = call.argument<Boolean>("isCasting")
-                    val castDeviceName = call.argument<String>("castDeviceName")
-                    val castVolume = call.argument<Int>("castVolume")
-                    val dacVolumeActive = call.argument<Boolean>("dacVolumeActive")
-                    val dacVolume = call.argument<Int>("dacVolume")
-
-                    val intent = Intent(this, MusicNotificationService::class.java).apply {
-                        title?.let { putExtra("title", it) }
-                        artist?.let { putExtra("artist", it) }
-                        putExtra("albumArtPath", albumArtPath)
-                        isPlaying?.let { putExtra("isPlaying", it) }
-                        duration?.let { putExtra("duration", it) }
-                        position?.let { putExtra("position", it) }
-                        isShuffle?.let { putExtra("isShuffle", it) }
-                        isFavorite?.let { putExtra("isFavorite", it) }
-                        isCasting?.let { putExtra("isCasting", it) }
-                        castDeviceName?.let { putExtra("castDeviceName", it) }
-                        castVolume?.let { putExtra("castVolume", it) }
-                        dacVolumeActive?.let { putExtra("dacVolumeActive", it) }
-                        dacVolume?.let { putExtra("dacVolume", it) }
-                        color?.let { putExtra("color", it) }
-                    }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        startForegroundService(intent)
-                    } else {
-                        startService(intent)
-                    }
-                    result.success(null)
-                }
-                "updateDacVolume" -> {
-                    val active = call.argument<Boolean>("active") == true
-                    dacVolumeKeysCaptured = active
-                    // Only an existing notification may start the service: it
-                    // goes foreground on every start, which needs one to show.
-                    if (call.argument<Boolean>("notify") == true) {
-                        val intent = Intent(this, MusicNotificationService::class.java).apply {
-                            putExtra("dacVolumeActive", active)
-                            call.argument<Int>("volume")?.let { putExtra("dacVolume", it) }
-                        }
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                            startForegroundService(intent)
-                        } else {
-                            startService(intent)
-                        }
-                    }
-                    result.success(null)
-                }
-                "hideNotification" -> {
-                    stopService(Intent(this, MusicNotificationService::class.java))
-                    result.success(null)
-                }
-                else -> result.notImplemented()
-            }
-        }
+        // The player (notification) channel is registered by FlickEngine so a
+        // headless engine has it too.
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -3921,19 +3768,6 @@ class MainActivity: FlutterActivity() {
         return digest.joinToString("") { "%02x".format(it) }
     }
 
-    private fun ensurePluginsRegistered(engine: FlutterEngine) {
-        synchronized(pluginRegistrationLock) {
-            val engineIdentity = System.identityHashCode(engine)
-            if (registeredMainEngineIdentity == engineIdentity) {
-                return
-            }
-
-            GeneratedPluginRegistrant.registerWith(engine)
-            engine.plugins.add(FlickVisualizerPlugin())
-            registeredMainEngineIdentity = engineIdentity
-        }
-    }
-
     // ========== UAC 2.0 USB Host (Android) ==========
 
     private fun listUac2Devices(refresh: Boolean = false): List<Map<String, Any?>> {
@@ -5796,9 +5630,9 @@ class MainActivity: FlutterActivity() {
         val direction = volumeKeyDirection(event.keyCode)
         // The claim, not hasDirectUsbHardwareVolume(): the control is rediscovered
         // with each stream, and a claimed DAC keeps the keys in between.
-        if (shouldConsumeDacVolumeKey(direction, dacVolumeKeysCaptured, activeDirectUsbDeviceName != null)) {
+        if (shouldConsumeDacVolumeKey(direction, FlickEngine.dacVolumeKeysCaptured, activeDirectUsbDeviceName != null)) {
             if (event.action == KeyEvent.ACTION_DOWN) {
-                playerChannel?.invokeMethod("adjustDacVolume", mapOf("direction" to direction))
+                FlickEngine.adjustDacVolume(direction)
             }
             return true
         }
@@ -5839,22 +5673,11 @@ class MainActivity: FlutterActivity() {
     companion object {
         private const val ACTION_USB_PERMISSION = "com.mossapps.flick.USB_PERMISSION"
         private var nextUsbPermissionRequestId = 1002
-        private val pluginRegistrationLock = Any()
-        private var registeredMainEngineIdentity: Int? = null
         // The native route and its USB interface ownership outlive Activity recreation.
         private var directUsbConnection: DirectUsbConnection? = null
         private var directUsbReleasePending = false
         private val directUsbReleaseHandler = Handler(Looper.getMainLooper())
         private val directUsbReleaseWaiters = mutableListOf<MethodChannel.Result>()
-
-        /**
-         * Dart says the DAC owns the phone's volume keys (direct USB, DAC
-         * hardware volume as the authority, not casting). A flag rather than a
-         * native check alone, because Dart also knows about safety blocks and
-         * DSD; kept out of the instance so an activity recreation does not drop it.
-         */
-        @Volatile
-        private var dacVolumeKeysCaptured = false
     }
 
     private external fun nativeInitRustAndroidContext(context: Context): Boolean
