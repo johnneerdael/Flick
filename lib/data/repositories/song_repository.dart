@@ -57,6 +57,18 @@ class SongRepository {
         .findAll();
   }
 
+  /// Check whether a saved local folder has tracks with this kind of source.
+  Future<bool> hasSongsWithPathPrefix(String folderUri, String prefix) async {
+    final song = await _isar.songEntitys
+        .where()
+        .folderUriEqualTo(folderUri)
+        .filter()
+        .sourceTypeIsNull()
+        .filePathStartsWith(prefix)
+        .findFirst();
+    return song != null;
+  }
+
   /// Search songs by title, artist, album, albumArtist or genre.
   Future<List<Song>> searchSongs(String query) async {
     final lowerQuery = query.toLowerCase();

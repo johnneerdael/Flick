@@ -408,6 +408,7 @@ class MainActivity: FlutterActivity() {
                         result.error("INVALID_ARGUMENT", "URI is required", null)
                     }
                 }
+                "getAndroidSdkInt" -> result.success(Build.VERSION.SDK_INT)
                 "resolveStorageInfo" -> {
                     val uri = call.argument<String>("uri")
                     if (uri != null) {
@@ -1003,7 +1004,9 @@ class MainActivity: FlutterActivity() {
     }
 
     private fun getPersistedUriPermissions(): List<String> {
-        return contentResolver.persistedUriPermissions.map { it.uri.toString() }
+        return contentResolver.persistedUriPermissions
+            .filter { it.isReadPermission }
+            .map { it.uri.toString() }
     }
 
     private fun saveImageToGallery(bytes: ByteArray, fileName: String, albumName: String): String {

@@ -15,8 +15,10 @@ class PermissionService {
   static const _allFilesNoticeDismissedKey = 'all_files_access_notice_dismissed';
 
   /// Request read access to the shared MediaStore index, not the SAF tree.
-  Future<bool> requestStoragePermission({required int sdkInt}) async {
-    final permission = sdkInt >= 33 ? Permission.audio : Permission.storage;
+  Future<bool> requestStoragePermission({int? sdkInt}) async {
+    final version = sdkInt ?? await _channel.invokeMethod<int>('getAndroidSdkInt');
+    if (version == null) return false;
+    final permission = version >= 33 ? Permission.audio : Permission.storage;
     final status = await permission.status;
     if (status.isGranted) return true;
     if (status.isPermanentlyDenied || status.isRestricted) return false;

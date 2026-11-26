@@ -1,11 +1,15 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:permission_handler/permission_handler.dart' show openAppSettings;
 import 'package:flick/src/rust/frb_generated.dart';
 import 'package:flick/app/app.dart';
+import 'package:flick/core/navigation/root_navigator.dart';
 import 'package:flick/data/database.dart';
+import 'package:flick/features/settings/screens/library_settings_screen.dart';
 import 'package:flick/services/album_color_mode_preference_service.dart';
 import 'package:flick/services/car/car_bridge.dart';
 import 'package:flick/services/app_preferences_service.dart';
@@ -15,6 +19,7 @@ import 'package:flick/services/permission_service.dart';
 import 'package:flick/services/player_service.dart';
 import 'package:flick/services/playback_cache_maintenance.dart';
 import 'package:flick/services/process_exit_diagnostics_service.dart';
+import 'package:flick/services/startup_library_access.dart';
 import 'package:flick/services/uac2_preferences_service.dart';
 import 'package:flick/services/uac2_service.dart';
 import 'package:flick/core/utils/app_log.dart';
@@ -22,6 +27,7 @@ import 'package:flick/core/utils/dev_log.dart';
 import 'package:flick/l10n/l10n.dart';
 import 'package:flick/core/utils/frame_timings_monitor.dart';
 import 'package:flick/src/rust/api/logging.dart';
+import 'package:flick/widgets/common/flick_snackbar.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -91,11 +97,7 @@ void _subscribeRustLogs() {
 
 Future<void> _bootstrapAppAfterFirstFrame() async {
   unawaited(DisplayModeService().initialize());
-  unawaited(
-    _requestNotificationPermission().catchError(
-      (Object e) => devLog('Notification permission request failed: $e'),
-    ),
-  );
+  unawaited(_requestStartupPermissions());
   unawaited(
     Uac2Service.instance
         .initializeAndroidRouteMonitoring()
@@ -111,6 +113,70 @@ Future<void> _bootstrapAppAfterFirstFrame() async {
       (Object e) => devLog('Playback cache maintenance failed: $e'),
     ),
   );
+}
+
+Future<void> _requestStartupPermissions() async {
+  if (!Platform.isAndroid) return;
+
+  await _waitUntilForeground();
+  LibraryAccessRecovery? recovery;
+  try {
+    recovery = await StartupLibraryAccess().requestIfNeeded(
+      waitUntilForeground: _waitUntilForeground,
+    );
+  } catch (e) {
+    devLog('Startup library permission check failed: $e');
+  }
+
+  // Serialize Android permission prompts, including when the launcher starts
+  // a Flutter engine that was originally created by Android Auto.
+  await _waitUntilForeground();
+  try {
+    await _requestNotificationPermission();
+  } catch (e) {
+    devLog('Notification permission request failed: $e');
+  }
+  if (recovery == null) return;
+
+  await _waitUntilForeground();
+  final navigator = rootNavigatorKey.currentState;
+  if (navigator == null) return;
+  final messenger = ScaffoldMessenger.maybeOf(navigator.context);
+  final needsFolder = recovery == LibraryAccessRecovery.folderPicker;
+  messenger?.showFlickSnackBar(
+    SnackBar(
+      content: Text(
+        needsFolder ? l10n.folderAccessLostReselect : l10n.storagePermissions,
+      ),
+      action: SnackBarAction(
+        label: needsFolder ? l10n.libraryLabel : l10n.openAndroidSettings,
+        onPressed: () {
+          if (needsFolder) {
+            navigator.push<void>(
+              MaterialPageRoute(builder: (_) => const LibrarySettingsScreen()),
+            );
+          } else {
+            unawaited(openAppSettings());
+          }
+        },
+      ),
+    ),
+  );
+}
+
+Future<void> _waitUntilForeground() async {
+  if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+    return;
+  }
+  final foreground = Completer<void>();
+  final listener = AppLifecycleListener(onResume: () {
+    if (!foreground.isCompleted) foreground.complete();
+  });
+  try {
+    await foreground.future;
+  } finally {
+    listener.dispose();
+  }
 }
 
 Future<void> _requestNotificationPermission() async {
