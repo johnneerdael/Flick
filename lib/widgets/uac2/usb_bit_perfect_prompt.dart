@@ -269,6 +269,13 @@ class _UsbBitPerfectPromptState extends ConsumerState<UsbBitPerfectPrompt> {
                 : l10n.englishForFilipino.bitPerfectUsbDacCouldNot2(status.device.productName),
           ),
           behavior: SnackBarBehavior.floating,
+          // A snackbar with an action persists by default. The success notice
+          // is only a confirmation, so it leaves on its own; a failure stays
+          // until it is dismissed.
+          duration: applied
+              ? const Duration(seconds: 2)
+              : const Duration(seconds: 4),
+          persist: !applied,
           action: SnackBarAction(
             label: l10n.englishForFilipino.undo,
             onPressed: () => unawaited(_declineAutoEngage(promptKey)),
