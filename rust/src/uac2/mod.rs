@@ -54,6 +54,8 @@ mod iso_transport_loss;
 #[cfg(feature = "uac2")]
 mod logging;
 #[cfg(feature = "uac2")]
+mod output_position;
+#[cfg(feature = "uac2")]
 mod payload_audit_latch;
 #[cfg(feature = "uac2")]
 mod quirk;
@@ -80,7 +82,11 @@ mod volume_control;
 mod tests;
 
 #[cfg(all(feature = "uac2", target_os = "android"))]
+pub(crate) use android_direct::android_direct_output_latency;
+#[cfg(all(feature = "uac2", target_os = "android"))]
 pub(crate) use android_direct::with_live_usb_reconnect;
+#[cfg(all(feature = "uac2", target_os = "android"))]
+pub(crate) use output_position::audible_position_secs;
 #[cfg(all(feature = "uac2", target_os = "android"))]
 pub use android_direct::{
     android_direct_cached_hardware_mute, android_direct_cached_hardware_volume,

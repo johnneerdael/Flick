@@ -8,6 +8,9 @@ use crate::uac2::iso_packet_validation::{
     account_timed_out_transfer, iso_transfer_status_label, validate_iso_packet_descriptors,
     CompletionStats, PacketAcceptance,
 };
+use crate::uac2::output_position::{
+    inflight_music_frames, music_frames_delivered, output_latency_frames, PlayedMusicCounter,
+};
 use crate::uac2::iso_transport_loss::{
     lost_frame_budget, ring_bytes_per_frame, LossLimits, LossLogGate, LossTracker, UrbLoss,
 };
@@ -550,6 +553,15 @@ pub struct AndroidDirectUsbDebugState {
     /// Ring frames lost on the USB transport this stream; any non-zero value
     /// has cleared `bit_perfect_verified` and `usb_stream_stable`.
     pub lost_frames: Option<u64>,
+    /// Music frames whose isochronous transfers the DAC has completed since the
+    /// stream started or the ring was last flushed. Excludes held silence,
+    /// underrun padding and lost frames; monotonic between flushes.
+    pub played_music_frames: Option<u64>,
+    /// Music frames between the decoder and the DAC: in the PCM ring plus
+    /// submitted to the bus and not yet completed.
+    pub output_latency_frames: Option<u64>,
+    /// `output_latency_frames` in milliseconds at the ring rate.
+    pub output_latency_ms: Option<f64>,
     pub drift_ms_from_target: Option<i32>,
     pub transfer_queue_depth: Option<u32>,
     pub completed_transfers: Option<u64>,
@@ -693,6 +705,16 @@ struct AndroidDirectUsbRuntimeStats {
     /// Latched by the first lost frame. Stats are created per stream, so a new
     /// stream starts unlatched.
     transport_loss_latched: AtomicBool,
+    /// Bumped, with the ring lock held, each time the ring is flushed.
+    flush_epoch: AtomicU64,
+    /// The engine's latest flush request that the render thread has carried
+    /// out. While it lags the request, the ring still holds audio that is about
+    /// to be dropped.
+    applied_flush_generation: AtomicU64,
+    /// Music frames the DAC has taken in the current flush epoch.
+    played_music_frames: AtomicU64,
+    /// Music frames of the current flush epoch submitted and not yet completed.
+    inflight_music_frames: AtomicU64,
     completed_transfers: AtomicU64,
     last_transfer_turnaround_us: AtomicU64,
     max_transfer_turnaround_us: AtomicU64,
@@ -717,6 +739,18 @@ struct AndroidDirectUsbPcmRingBuffer {
     /// Set by `clear`: hold wire silence until the ring can fill a transfer, so
     /// a flush never shows up as an underrun or a half-padded transfer.
     refill_pending: bool,
+    /// Counts `clear` calls. A transfer remembers the epoch it was filled in, so
+    /// audio queued before a flush is never mistaken for audio after it.
+    flush_epoch: u64,
+}
+
+/// What `pop_music_into_or_pad` took from the ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RingPop {
+    /// The ring ran dry and the tail of the output is padding.
+    underrun: bool,
+    /// Samples taken from the ring; the rest of the output is padding.
+    music_samples: usize,
 }
 
 struct AndroidDirectUsbLock {
@@ -876,6 +910,10 @@ struct IsoTransferSlot {
     queued_underrun: bool,
     /// The queued transfer carries held wire silence, not audio.
     queued_held: bool,
+    /// Frames of the queued transfer taken from the ring (not padding or hold).
+    queued_music_frames: usize,
+    /// Flush epoch the queued transfer was filled in.
+    queued_epoch: u64,
     submitted_at: Option<Instant>,
     in_flight: bool,
 }
@@ -890,6 +928,10 @@ struct IsoTransferPayload {
     /// that carries it cannot have lost audio.
     held: bool,
     frame_count: usize,
+    /// Frames taken from the ring: `frame_count` minus padding and holds.
+    music_frames: usize,
+    /// Flush epoch of the ring when this transfer was filled.
+    epoch: u64,
 }
 
 impl IsoTransferSlot {
@@ -920,6 +962,8 @@ impl IsoTransferSlot {
             queued_frame_count: 0,
             queued_underrun: false,
             queued_held: false,
+            queued_music_frames: 0,
+            queued_epoch: 0,
             submitted_at: None,
             in_flight: false,
         })
@@ -993,6 +1037,8 @@ impl IsoTransferSlot {
         self.queued_frame_count = payload.frame_count;
         self.queued_underrun = payload.underrun;
         self.queued_held = payload.held;
+        self.queued_music_frames = payload.music_frames;
+        self.queued_epoch = payload.epoch;
         self.packet_sizes.copy_from_slice(&payload.packet_sizes);
         self.submitted_at = Some(Instant::now());
         self.in_flight = true;
@@ -1040,6 +1086,7 @@ impl IsoTransferSlot {
         self.queued_frame_count = 0;
         self.queued_underrun = false;
         self.queued_held = false;
+        self.queued_music_frames = 0;
         self.submitted_at = None;
         self.in_flight = false;
     }
@@ -1408,6 +1455,10 @@ impl AndroidDirectUsbRuntimeStats {
             zero_packets: AtomicU64::new(0),
             data_urb_timeouts: AtomicU64::new(0),
             transport_loss_latched: AtomicBool::new(false),
+            flush_epoch: AtomicU64::new(0),
+            applied_flush_generation: AtomicU64::new(0),
+            played_music_frames: AtomicU64::new(0),
+            inflight_music_frames: AtomicU64::new(0),
             completed_transfers: AtomicU64::new(0),
             last_transfer_turnaround_us: AtomicU64::new(0),
             max_transfer_turnaround_us: AtomicU64::new(0),
@@ -1421,6 +1472,34 @@ impl AndroidDirectUsbRuntimeStats {
 
     fn transport_loss_latched(&self) -> bool {
         self.transport_loss_latched.load(Ordering::Relaxed)
+    }
+
+    /// Music frames between the decoder and the DAC: queued in the ring plus
+    /// submitted and not yet completed. Transfers carrying held silence or
+    /// padding are not music and are not counted.
+    fn output_latency_frames(&self) -> u64 {
+        let ring_frames = (self.buffered_samples.load(Ordering::Relaxed) / self.channels.max(1))
+            as u64;
+        output_latency_frames(ring_frames, self.inflight_music_frames.load(Ordering::Relaxed))
+    }
+
+    /// `output_latency_frames` for a caller that knows the engine's latest flush
+    /// request. A seek publishes the new decoder position before the render
+    /// thread has dropped what is still queued; until it has, nothing in the
+    /// ring or on the bus is ahead of that position, so the lead is zero rather
+    /// than a quarter of a second that is about to vanish.
+    fn output_latency_frames_for_request(&self, requested_flush_generation: u64) -> u64 {
+        if self.applied_flush_generation.load(Ordering::Acquire) != requested_flush_generation {
+            return 0;
+        }
+        self.output_latency_frames()
+    }
+
+    fn output_latency_ms(&self) -> f64 {
+        if self.sample_rate == 0 {
+            return 0.0;
+        }
+        self.output_latency_frames() as f64 * 1_000.0 / f64::from(self.sample_rate)
     }
 
     fn buffer_fill_ms(&self) -> u32 {
@@ -1468,7 +1547,12 @@ impl AndroidDirectUsbPcmRingBuffer {
             len_samples: 0,
             dop_marker_is_fa: false,
             refill_pending: false,
+            flush_epoch: 0,
         }
+    }
+
+    fn flush_epoch(&self) -> u64 {
+        self.flush_epoch
     }
 
     fn len_samples(&self) -> usize {
@@ -1482,6 +1566,7 @@ impl AndroidDirectUsbPcmRingBuffer {
         self.write_index = 0;
         self.len_samples = 0;
         self.refill_pending = true;
+        self.flush_epoch = self.flush_epoch.wrapping_add(1);
     }
 
     /// True while `clear` is waiting for `needed_samples` of new audio. The
@@ -1514,11 +1599,25 @@ impl AndroidDirectUsbPcmRingBuffer {
     fn pop_into_or_pad(
         &mut self,
         output: &mut [i32],
-        _channels: usize,
+        channels: usize,
         dsd_transport: DsdTransportMode,
     ) -> bool {
+        self.pop_music_into_or_pad(output, channels, dsd_transport)
+            .underrun
+    }
+
+    /// `pop_into_or_pad`, also reporting how much of `output` is real audio.
+    fn pop_music_into_or_pad(
+        &mut self,
+        output: &mut [i32],
+        _channels: usize,
+        dsd_transport: DsdTransportMode,
+    ) -> RingPop {
         if output.is_empty() {
-            return false;
+            return RingPop {
+                underrun: false,
+                music_samples: 0,
+            };
         }
 
         let readable = output.len().min(self.len_samples) / self.channels * self.channels;
@@ -1537,7 +1636,10 @@ impl AndroidDirectUsbPcmRingBuffer {
 
         self.stamp_dop_markers(output, dsd_transport);
 
-        underrun
+        RingPop {
+            underrun,
+            music_samples: readable,
+        }
     }
 
     /// Fills `output` with wire-correct silence and leaves the queue untouched.
@@ -2307,6 +2409,18 @@ pub fn validate_android_direct_request(preferred_sample_rate: Option<u32>) -> Re
     ))
 }
 
+/// Music frames between the decoder and the DAC, and the ring rate they are
+/// counted at, while a direct-USB stream is running.
+///
+/// `requested_flush_generation` is the engine's latest output flush request.
+pub(crate) fn android_direct_output_latency(requested_flush_generation: u64) -> Option<(u64, u32)> {
+    let stats = DIRECT_USB_STATE.lock().as_ref()?.runtime_stats.clone()?;
+    Some((
+        stats.output_latency_frames_for_request(requested_flush_generation),
+        stats.sample_rate,
+    ))
+}
+
 pub fn android_direct_debug_state() -> AndroidDirectUsbDebugState {
     let state = DIRECT_USB_STATE.lock().clone();
     let idle_lock_held = DIRECT_USB_LOCK.lock().is_some();
@@ -2461,6 +2575,10 @@ pub fn android_direct_debug_state() -> AndroidDirectUsbDebugState {
         producer_frames: runtime_stats.map(|stats| stats.producer_frames.load(Ordering::Relaxed)),
         consumer_frames: runtime_stats.map(|stats| stats.consumer_frames.load(Ordering::Relaxed)),
         lost_frames: runtime_stats.map(|stats| stats.lost_frames.load(Ordering::Relaxed)),
+        played_music_frames: runtime_stats
+            .map(|stats| stats.played_music_frames.load(Ordering::Relaxed)),
+        output_latency_frames: runtime_stats.map(|stats| stats.output_latency_frames()),
+        output_latency_ms: runtime_stats.map(|stats| stats.output_latency_ms()),
         drift_ms_from_target: runtime_stats.map(|stats| stats.drift_ms_from_target()),
         transfer_queue_depth: runtime_stats
             .map(|stats| stats.transfer_queue_depth.load(Ordering::Relaxed) as u32)
@@ -5493,6 +5611,9 @@ fn run_usb_render_loop(
     }
 
     let mut applied_flush_generation = callback_data.output_flush_generation();
+    runtime_stats
+        .applied_flush_generation
+        .store(applied_flush_generation, Ordering::Release);
     while !usb_stop_requested(&stop) {
         let cycle_start = Instant::now();
         // Seek (or a new source replacing a paused one): drop what is queued so
@@ -5504,10 +5625,21 @@ fn run_usb_render_loop(
                 let mut guard = pcm_buffer.lock();
                 let dropped_samples = guard.len_samples();
                 guard.clear();
+                // Under the ring lock, so a transfer filled afterwards carries
+                // the new epoch and one filled before it the old one.
+                runtime_stats
+                    .flush_epoch
+                    .store(guard.flush_epoch(), Ordering::Release);
                 dropped_samples
             };
             runtime_stats.buffered_samples.store(0, Ordering::Relaxed);
+            // Music already on the bus belongs to the old epoch and is no longer
+            // ahead of the new position; the output thread's next publish agrees.
+            runtime_stats.inflight_music_frames.store(0, Ordering::Relaxed);
             applied_flush_generation = flush_generation;
+            runtime_stats
+                .applied_flush_generation
+                .store(applied_flush_generation, Ordering::Release);
             dev_eprintln!(
                 "[USB] output flush dropped {}ms of queued audio",
                 samples_to_millis(dropped_samples, ring_rate, channels)
@@ -5767,19 +5899,20 @@ fn prepare_iso_transfer_payload(
     // clock lock) running. They neither consume the ring nor count as an
     // underrun, and they skip the payload audit: silence is expected there and
     // must not clear the verified state.
-    let (underrun, held) = {
+    let (underrun, held, music_samples, epoch) = {
         let mut guard = pcm_buffer.lock();
         let held = paused || guard.awaiting_refill(total_samples);
-        let underrun = if held {
+        let (underrun, music_samples) = if held {
             guard.fill_wire_silence(&mut packet_samples, dsd_transport);
-            false
+            (false, 0)
         } else {
-            guard.pop_into_or_pad(&mut packet_samples, channels, dsd_transport)
+            let pop = guard.pop_music_into_or_pad(&mut packet_samples, channels, dsd_transport);
+            (pop.underrun, pop.music_samples)
         };
         runtime_stats
             .buffered_samples
             .store(guard.len_samples(), Ordering::Relaxed);
-        (underrun, held)
+        (underrun, held, music_samples, guard.flush_epoch())
     };
 
     let mut transfer_buffer = vec![0u8; total_bytes];
@@ -5817,7 +5950,26 @@ fn prepare_iso_transfer_payload(
         transfer_buffer,
         underrun,
         held,
+        music_frames: music_samples / channels.max(1),
+        epoch,
     }))
+}
+
+/// Publish how much music is submitted to the bus and not yet completed, for
+/// transfers filled since the last flush. Called by the output thread, which
+/// owns the slots, after it has handled a batch of completions and submissions.
+fn publish_inflight_music(slots: &[IsoTransferSlot], runtime_stats: &AndroidDirectUsbRuntimeStats) {
+    let epoch = runtime_stats.flush_epoch.load(Ordering::Acquire);
+    let inflight = inflight_music_frames(
+        epoch,
+        slots
+            .iter()
+            .filter(|slot| slot.in_flight)
+            .map(|slot| (slot.queued_epoch, slot.queued_music_frames as u64)),
+    );
+    runtime_stats
+        .inflight_music_frames
+        .store(inflight, Ordering::Relaxed);
 }
 
 fn publish_transport_loss(runtime_stats: &AndroidDirectUsbRuntimeStats, tracker: &LossTracker) {
@@ -6190,6 +6342,7 @@ fn run_usb_output_loop(
     });
     // Separate gates so benign repacketisation cannot use up the budget for
     // lines that report real loss.
+    let mut played_music = PlayedMusicCounter::default();
     let mut loss_log_gate = LossLogGate::new(
         ANDROID_USB_LOSS_LOG_BURST,
         ANDROID_USB_LOSS_LOG_MIN_INTERVAL_MS,
@@ -6300,6 +6453,7 @@ fn run_usb_output_loop(
         }
     }
     min_active_slots = min_active_slots.min(active_slots);
+    publish_inflight_music(&slots, &runtime_stats);
 
     if let Some(slot) = feedback_slot.as_mut().filter(|_| !usb_stop_requested(&stop)) {
         let endpoint = slot.endpoint;
@@ -6364,6 +6518,8 @@ fn run_usb_output_loop(
             let queued_frame_count = slot.queued_frame_count as u64;
             let completed_underrun = slot.queued_underrun;
             let completed_held = slot.queued_held;
+            let completed_music_frames = slot.queued_music_frames as u64;
+            let completed_epoch = slot.queued_epoch;
             // A single timed-out isochronous URB is a lost slot, not a broken
             // device, so the stream keeps going. Its audio is gone though: it is
             // counted as lost (never as consumed) and the stream is bounded by
@@ -6483,6 +6639,23 @@ fn run_usb_output_loop(
             runtime_stats
                 .consumer_frames
                 .fetch_add(verdict.consumed_frames, Ordering::Relaxed);
+            // Music the DAC took from this transfer. A transfer that carried
+            // held silence has no music, padding and lost frames are not
+            // counted, and one filled before a flush belongs to the old epoch.
+            // The slot is resubmitted with a fresh payload, so a timed-out
+            // transfer is counted here once and never again.
+            runtime_stats.played_music_frames.store(
+                played_music.complete(
+                    runtime_stats.flush_epoch.load(Ordering::Acquire),
+                    completed_epoch,
+                    music_frames_delivered(
+                        queued_frame_count,
+                        completed_music_frames,
+                        urb_loss.lost_frames,
+                    ),
+                ),
+                Ordering::Relaxed,
+            );
 
             if let Some(limit) = verdict.fatal {
                 fatal_error = Some(format!(
@@ -6584,7 +6757,7 @@ fn run_usb_output_loop(
                     .unwrap_or(-1);
                 let feedback_rate_hz = feedback_counters.last_estimated_sample_rate.unwrap_or(0.0);
                 log_info!(
-                    "[USB-TIMING] completed={} queueDepth={} minQueueDepth={} configuredQueueDepth={} effectiveRateHz={:.3} lastTurnaroundUs={} maxTurnaroundUs={} lastSubmitGapUs={} maxSubmitGapUs={} feedbackActive={} reports={} timeouts={} errors={} rejected={} feedbackAgeMs={} feedbackRateHz={:.2} lostFrames={} shortPackets={} zeroPackets={} dataUrbTimeouts={} transportLoss={}",
+                    "[USB-TIMING] completed={} queueDepth={} minQueueDepth={} configuredQueueDepth={} effectiveRateHz={:.3} lastTurnaroundUs={} maxTurnaroundUs={} lastSubmitGapUs={} maxSubmitGapUs={} feedbackActive={} reports={} timeouts={} errors={} rejected={} feedbackAgeMs={} feedbackRateHz={:.2} lostFrames={} shortPackets={} zeroPackets={} dataUrbTimeouts={} transportLoss={} playedMusicFrames={} outputLatencyMs={:.1}",
                     completed_transfers,
                     runtime_stats.transfer_queue_depth.load(Ordering::Relaxed),
                     min_active_slots,
@@ -6606,6 +6779,8 @@ fn run_usb_output_loop(
                     runtime_stats.zero_packets.load(Ordering::Relaxed),
                     runtime_stats.data_urb_timeouts.load(Ordering::Relaxed),
                     runtime_stats.transport_loss_latched(),
+                    runtime_stats.played_music_frames.load(Ordering::Relaxed),
+                    runtime_stats.output_latency_ms(),
                 );
                 let feedback_stale = feedback_slot.is_some()
                     && if feedback_counters.reports == 0 {
@@ -6661,6 +6836,7 @@ fn run_usb_output_loop(
                 set_usb_stream_stable(false);
             }
         }
+        publish_inflight_music(&slots, &runtime_stats);
     }
 
     if let Some(error) = fatal_error {
@@ -9596,6 +9772,8 @@ mod pcm_ring_hold_tests {
         slot.queued_frame_count = 96;
         slot.queued_underrun = true;
         slot.queued_held = true;
+        slot.queued_music_frames = 96;
+        slot.queued_epoch = 3;
         slot.in_flight = true;
 
         slot.mark_completed();
@@ -9603,6 +9781,140 @@ mod pcm_ring_hold_tests {
         assert_eq!(slot.queued_frame_count, 0);
         assert!(!slot.queued_underrun);
         assert!(!slot.queued_held);
+        assert_eq!(slot.queued_music_frames, 0);
         assert!(!slot.in_flight);
+    }
+
+    #[test]
+    fn ring_pops_report_how_much_of_the_output_was_music() {
+        let mut ring = AndroidDirectUsbPcmRingBuffer::new(16, 2);
+        assert_eq!(ring.push_samples(&[1, 2, 3, 4, 5, 6]), 6);
+
+        let mut full = [0i32; 4];
+        assert_eq!(
+            ring.pop_music_into_or_pad(&mut full, 2, DsdTransportMode::None),
+            RingPop {
+                underrun: false,
+                music_samples: 4
+            }
+        );
+
+        // Two samples left for an eight-sample transfer: six are padding.
+        let mut short = [9i32; 8];
+        assert_eq!(
+            ring.pop_music_into_or_pad(&mut short, 2, DsdTransportMode::None),
+            RingPop {
+                underrun: true,
+                music_samples: 2
+            }
+        );
+        assert_eq!(short, [5, 6, 0, 0, 0, 0, 0, 0]);
+
+        // Dry: nothing but padding.
+        let mut dry = [9i32; 4];
+        assert_eq!(
+            ring.pop_music_into_or_pad(&mut dry, 2, DsdTransportMode::None),
+            RingPop {
+                underrun: true,
+                music_samples: 0
+            }
+        );
+    }
+
+    #[test]
+    fn transfers_report_their_music_frames_and_the_flush_epoch_they_were_filled_in() {
+        let _latch = PAYLOAD_LATCH_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let stats = AndroidDirectUsbRuntimeStats::new(48_000, 2, 200, 100);
+        let ring = Arc::new(Mutex::new(AndroidDirectUsbPcmRingBuffer::new(
+            stats.buffer_capacity_samples,
+            2,
+        )));
+        let music: Vec<i32> = (1..=2_000).map(|i| i << 16).collect();
+        assert_eq!(ring.lock().push_samples(&music), 2_000);
+
+        // Playing: every frame of the transfer is music.
+        let playing = prepare(&ring, &stats, false);
+        assert_eq!(playing.music_frames, playing.frame_count);
+        assert_eq!(playing.epoch, 0);
+
+        // Paused: a held transfer carries no music.
+        let paused = prepare(&ring, &stats, true);
+        assert_eq!(paused.music_frames, 0);
+        assert!(paused.frame_count > 0);
+
+        // A flush starts a new epoch; the refill wait is held silence.
+        ring.lock().clear();
+        let refilling = prepare(&ring, &stats, false);
+        assert_eq!(refilling.music_frames, 0);
+        assert_eq!(refilling.epoch, 1, "filled after the flush");
+
+        // Underrun: only what the ring still had is music, the rest is padding.
+        let half = playing.frame_count / 2;
+        assert_eq!(ring.lock().push_samples(&music[..half * 2]), half * 2);
+        // Satisfy the refill wait first, then drain into a short transfer.
+        let first = prepare(&ring, &stats, false);
+        assert!(first.held, "half a transfer is not enough to leave the hold");
+        assert_eq!(ring.lock().push_samples(&music[..playing.frame_count * 2]), playing.frame_count * 2);
+        let full = prepare(&ring, &stats, false);
+        assert_eq!(full.music_frames, full.frame_count);
+        let dry = prepare(&ring, &stats, false);
+        assert!(dry.underrun);
+        assert!(dry.music_frames < dry.frame_count, "padding is not music");
+        assert_eq!(dry.epoch, 1);
+    }
+
+    #[test]
+    fn latency_is_zero_until_the_render_thread_has_applied_the_requested_flush() {
+        let stats = AndroidDirectUsbRuntimeStats::new(48_000, 2, 200, 100);
+        stats.buffered_samples.store(24_000, Ordering::Relaxed);
+        stats.inflight_music_frames.store(768, Ordering::Relaxed);
+        let full = stats.output_latency_frames();
+        assert_eq!(full, 12_768);
+
+        // In step with the engine: the real latency.
+        assert_eq!(stats.output_latency_frames_for_request(0), full);
+
+        // A seek has been requested (generation 1) but the ring has not been
+        // cleared yet: the new position has nothing queued ahead of it.
+        assert_eq!(stats.output_latency_frames_for_request(1), 0);
+
+        // The render thread clears the ring and records that it has.
+        stats.applied_flush_generation.store(1, Ordering::Release);
+        stats.buffered_samples.store(0, Ordering::Relaxed);
+        stats.inflight_music_frames.store(0, Ordering::Relaxed);
+        assert_eq!(stats.output_latency_frames_for_request(1), 0);
+
+        // New audio queued after the flush counts again.
+        stats.buffered_samples.store(960, Ordering::Relaxed);
+        assert_eq!(stats.output_latency_frames_for_request(1), 480);
+    }
+
+    #[test]
+    fn output_latency_is_the_ring_plus_the_current_epochs_music_on_the_bus() {
+        let stats = AndroidDirectUsbRuntimeStats::new(48_000, 2, 200, 100);
+        // 4800 samples = 2400 frames = 50 ms in the ring.
+        stats.buffered_samples.store(4_800, Ordering::Relaxed);
+        assert_eq!(stats.output_latency_frames(), 2_400);
+
+        // Three transfers on the bus: music of this epoch, held silence, and
+        // music from before a flush.
+        let mut slots: Vec<IsoTransferSlot> =
+            (0..3).map(|i| IsoTransferSlot::new(i, 16, 1024).unwrap()).collect();
+        for (slot, (epoch, music)) in slots.iter_mut().zip([(1, 96), (1, 0), (0, 96)]) {
+            slot.in_flight = true;
+            slot.queued_epoch = epoch;
+            slot.queued_music_frames = music;
+        }
+        stats.flush_epoch.store(1, Ordering::Release);
+        publish_inflight_music(&slots, &stats);
+        assert_eq!(stats.inflight_music_frames.load(Ordering::Relaxed), 96);
+        assert_eq!(stats.output_latency_frames(), 2_400 + 96);
+        assert!((stats.output_latency_ms() - (2_496.0 * 1_000.0 / 48_000.0)).abs() < 1e-9);
+
+        // A transfer that has completed is no longer in flight.
+        slots[0].mark_completed();
+        publish_inflight_music(&slots, &stats);
+        assert_eq!(stats.inflight_music_frames.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.output_latency_frames(), 2_400);
     }
 }

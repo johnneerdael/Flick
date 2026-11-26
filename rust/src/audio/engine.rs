@@ -1430,8 +1430,25 @@ impl AudioEngineHandle {
     /// Get current progress from the callback-published snapshot. Progress
     /// polling runs every 50 ms; taking the source lock here raced the audio
     /// callback and could silence a block on a `try_lock` miss.
+    ///
+    /// On the direct-USB path the decoder runs ahead of the speakers by the PCM
+    /// ring plus the transfers already on the bus, so the decoder position is
+    /// corrected back to what the DAC has been given to play.
     pub fn get_progress(&self) -> Option<PlaybackProgress> {
-        self.callback_data.progress_snapshot()
+        #[allow(unused_mut)]
+        let mut progress = self.callback_data.progress_snapshot()?;
+        #[cfg(all(feature = "uac2", target_os = "android"))]
+        if let Some((latency_frames, ring_rate_hz)) = crate::uac2::android_direct_output_latency(
+            self.callback_data.output_flush_generation(),
+        ) {
+            progress.position_secs = crate::uac2::audible_position_secs(
+                progress.position_secs,
+                latency_frames,
+                ring_rate_hz,
+                self.callback_data.get_playback_speed(),
+            );
+        }
+        Some(progress)
     }
 
     /// Get the current track path.
