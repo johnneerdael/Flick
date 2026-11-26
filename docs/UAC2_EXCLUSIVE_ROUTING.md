@@ -23,6 +23,21 @@ saved preferences alone do not take ownership of the DAC.
   descriptor is not a substitute. If a device refuses the initial claim, retry
   after reconnecting, or test with **Disable USB audio routing** enabled in
   Developer options as a fallback.
+- Handing the DAC back also hands back its volume. Flick remembers the level
+  the DAC had when its volume control was first found during an attachment,
+  before any write of its own, and writes that raw value back (with read-back,
+  best effort) as the registration is cleared: after the stream has stopped
+  and before the interfaces are released, because Android's driver would
+  otherwise play at the level Flick last set. It happens when direct USB is
+  turned off, when the engine switches to Android, when another DAC replaces
+  this one, when the DAC is disconnected from Settings and when the app quits
+  (not on rotation). It never happens on an unplugged DAC (the level is
+  forgotten), between songs on the direct path, when the idle release closes
+  the stream while Flick still holds the DAC, or when Flick claims the DAC
+  again straight away (the fallback-rate retry), which keeps the original
+  level for the next release. Flick's own saved level and its restore on
+  connect are unchanged. A process the system kills outside `onDestroy`
+  releases nothing, so the level stays where Flick left it.
 - Isochronous packet lengths must still match exactly and a timed-out audio
   transfer remains fatal. PCM at a 125 µs service interval uses 16 packets
   per transfer and eight slots (16 ms queued) instead of 32 packets and

@@ -1072,7 +1072,9 @@ class MainActivity: FlutterActivity() {
                     result.success(nativeSetRustDirectUsbPlaybackFormat(0, 0, 0, false, false))
                 }
                 "deactivateDirectUsb" -> {
-                    val stopped = deactivateDirectUsb()
+                    // Android gets the DAC unless Dart is about to claim it again.
+                    val handBack = call.argument<Boolean>("handBack") ?: true
+                    val stopped = deactivateDirectUsb(originalVolumeActionOnRelease(handBack, isActiveDirectUsbDeviceAttached()))
                     if (directUsbReleasePending) {
                         // Don't start a managed fallback while Flick still owns the DAC.
                         directUsbReleaseWaiters += result
@@ -4308,7 +4310,9 @@ class MainActivity: FlutterActivity() {
                 // Do not skip its restore just because the connection is reusable.
                 return restoreDirectUsbHardwareVolume(deviceName, restoreVolume)
             }
-            if (directUsbConnection != null && !deactivateDirectUsb()) {
+            if (directUsbConnection != null &&
+                !deactivateDirectUsb(originalVolumeActionOnRelease(true, isActiveDirectUsbDeviceAttached()))
+            ) {
                 throw DirectUsbClaimException("The previous USB DAC is still being released. Retry in a moment.")
             }
             val connection = usbManager.openDevice(device) ?: run {
@@ -4547,11 +4551,21 @@ class MainActivity: FlutterActivity() {
         return true
     }
 
-    private fun deactivateDirectUsb(): Boolean {
+    private fun isActiveDirectUsbDeviceAttached(): Boolean = currentActiveDirectUsbDevice() != null
+
+    /**
+     * Lets go of the DAC. [originalVolume] says what native does with the level
+     * the DAC had before Flick changed it, as it clears the registration: write
+     * it back when Android gets the DAC, forget it when the DAC is gone, keep it
+     * when Flick holds on or takes the DAC straight back (the default, which is
+     * also what every failed activation wants).
+     */
+    private fun deactivateDirectUsb(originalVolume: OriginalVolumeAction = OriginalVolumeAction.KEEP): Boolean {
         return try {
             if (directUsbReleasePending) return false
             directUsbPlaybackActive = false
             nativeSetRustDirectUsbLockEnabled(false)
+            nativeSetRustDirectUsbOriginalVolumeAction(originalVolume.code)
             nativeClearRustDirectUsbPlayback()
             val registration = directUsbConnection
             val stopped = nativeWaitRustDirectUsbSessionStopped(0)
@@ -5379,7 +5393,8 @@ class MainActivity: FlutterActivity() {
                         val detachedName = detachedDevice?.deviceName
                         val wasDirect = detachedName != null && detachedName == activeDirectUsbDeviceName
                         if (wasDirect) {
-                            deactivateDirectUsb()
+                            // Gone: nothing to write back to, and a replug starts fresh.
+                            deactivateDirectUsb(OriginalVolumeAction.FORGET)
                         }
                         detachedName?.let { promptedUsbPermissionDeviceNames.remove(it) }
                         pendingUac2Permission?.takeIf { it.deviceName == detachedName }?.let {
@@ -5816,7 +5831,8 @@ class MainActivity: FlutterActivity() {
         }
         a2dpProxy = null
         if (killIsochronousUsbOnQuit) {
-            deactivateDirectUsb()
+            // Quitting hands the DAC to Android; a recreation (rotation) does not.
+            deactivateDirectUsb(originalVolumeActionOnRelease(isFinishing, isActiveDirectUsbDeviceAttached()))
         }
     }
 
@@ -5866,6 +5882,7 @@ class MainActivity: FlutterActivity() {
     private external fun nativeSetRustDirectUsbHardwareMute(muted: Boolean): Boolean
     private external fun nativeVerifyRustDirectUsbHardwareVolumeHealth(): Int
     private external fun nativeGetRustAudioDebugStateJson(): String?
+    private external fun nativeSetRustDirectUsbOriginalVolumeAction(action: Int): Boolean
     private external fun nativeClearRustDirectUsbPlayback(): Boolean
     private external fun nativeWaitRustDirectUsbSessionStopped(timeoutMs: Int): Boolean
     private external fun nativeSetRustDirectUsbReconnectTarget(

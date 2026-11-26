@@ -1046,7 +1046,9 @@ class Uac2Service {
       return false;
     }
 
-    await releaseAndroidDirectUsbRuntime();
+    // Flick claims the DAC again below: Android must not get it in between, and
+    // the level it had before Flick changed it stays remembered.
+    await releaseAndroidDirectUsbRuntime(handBack: false);
     final selected = await selectDevice(resolvedDevice);
     if (!selected) {
       return false;
@@ -1087,7 +1089,14 @@ class Uac2Service {
     return true;
   }
 
-  Future<void> releaseAndroidDirectUsbRuntime() async {
+  /// Stops direct USB and lets go of the DAC's interfaces.
+  ///
+  /// With [handBack] (the default) Android's own USB audio driver gets the DAC
+  /// afterwards, so native first writes back the level the DAC had before Flick
+  /// first changed it (best effort, and never to a DAC that has been unplugged).
+  /// Pass false only when Flick claims the DAC again straight away: nothing is
+  /// written, and the remembered level carries over to the next claim.
+  Future<void> releaseAndroidDirectUsbRuntime({bool handBack = true}) async {
     if (!Platform.isAndroid) {
       return;
     }
@@ -1101,7 +1110,9 @@ class Uac2Service {
       devLog('Uac2Service.clearDirectUsbPlaybackFormat failed: $e');
     }
     try {
-      await _channel.invokeMethod<bool>('deactivateDirectUsb');
+      await _channel.invokeMethod<bool>('deactivateDirectUsb', {
+        'handBack': handBack,
+      });
     } catch (e) {
       devLog('Uac2Service.deactivateDirectUsb failed: $e');
     }
@@ -1233,7 +1244,9 @@ Future<void> stopPriorityAnchor() async {
       if (Platform.isAndroid) {
         await _setAndroidDirectUsbPlaybackActive(false);
         try {
-          await _channel.invokeMethod<bool>('deactivateDirectUsb');
+          await _channel.invokeMethod<bool>('deactivateDirectUsb', {
+            'handBack': true,
+          });
         } catch (e) {
           devLog('Uac2Service.deactivateDirectUsb failed: $e');
         }

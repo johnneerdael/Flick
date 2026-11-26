@@ -178,9 +178,15 @@ class _Usb extends Fake implements Uac2Service {
   int runtimeReleases = 0;
   int activations = 0;
 
+  /// The `handBack` of each release: true lets Android's own driver have the
+  /// DAC (native writes the DAC's original level back first), false means Flick
+  /// claims it again straight away.
+  final handBacks = <bool>[];
+
   @override
-  Future<void> releaseAndroidDirectUsbRuntime() async {
+  Future<void> releaseAndroidDirectUsbRuntime({bool handBack = true}) async {
     runtimeReleases++;
+    handBacks.add(handBack);
     status = status.copyWith(directUsbRegistered: false);
   }
 
@@ -503,6 +509,9 @@ void main() {
         'Android USB direct transfer failed: libusb_submit_transfer failed with code -4',
       );
       expect(usb.runtimeReleases, 1);
+      // Android's driver gets the DAC between the two claims: the level it had
+      // before Flick changed it is written back first (if it is still attached).
+      expect(usb.handBacks, [true]);
       expect(usb.freshQueries, [true]);
       expect(usb.activations, 1);
       expect(playback.starts, [(song: _song, position: const Duration(seconds: 19))]);
@@ -522,6 +531,13 @@ void main() {
       expect(playback.starts, [
         (song: _song, position: const Duration(seconds: 19)),
       ]);
+    });
+
+    test('staying on direct USB never hands the DAC back', () async {
+      await player.setAudioEnginePreference(AudioEnginePreference.isochronousUsb);
+      await player.reconcileVolumeForTesting();
+      expect(usb.runtimeReleases, 0);
+      expect(usb.handBacks, isEmpty);
     });
 
     test('an absent DAC is never reopened using its disconnected handle', () async {

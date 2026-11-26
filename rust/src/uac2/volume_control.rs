@@ -131,6 +131,55 @@ pub(crate) fn quantize_volume(volume: f64, ranges: &[VolumeRange]) -> i16 {
     nearest(floor).or_else(|| nearest(min)).unwrap_or(min)
 }
 
+/// The level a DAC had before Flick first changed it during one attachment, and
+/// the control that writes it back. The live volume control is dropped with each
+/// stream, so the record keeps its own copy and survives stream restarts and idle
+/// releases. It ends when the level is handed back or forgotten, or is replaced
+/// by another DAC's.
+#[derive(Debug)]
+pub(crate) struct OriginalVolume<C> {
+    pub(crate) device: String,
+    pub(crate) control: C,
+    pub(crate) raw: i16,
+}
+
+#[derive(Debug)]
+pub(crate) struct OriginalVolumeSlot<C>(Option<OriginalVolume<C>>);
+
+impl<C> OriginalVolumeSlot<C> {
+    pub(crate) const fn new() -> Self {
+        Self(None)
+    }
+
+    pub(crate) fn is_recorded(&self, device: &str) -> bool {
+        self.0.as_ref().is_some_and(|original| original.device == device)
+    }
+
+    /// Records `raw` as the original of `device` unless one is already recorded
+    /// for it: later readings are Flick's own writes. Another DAC's record goes.
+    pub(crate) fn note(&mut self, device: &str, control: C, raw: i16) {
+        if !self.is_recorded(device) {
+            self.0 = Some(OriginalVolume { device: device.to_string(), control, raw });
+        }
+    }
+
+    /// The record of `device`, ending it. Another DAC's record is left alone.
+    pub(crate) fn take(&mut self, device: &str) -> Option<OriginalVolume<C>> {
+        if self.is_recorded(device) { self.0.take() } else { None }
+    }
+
+    pub(crate) fn forget(&mut self) {
+        self.0 = None;
+    }
+}
+
+/// The one level every channel reads, or None if they disagree (or there are
+/// none): a DAC with split channels has no single level to hand back.
+pub(crate) fn common_channel_volume(channels: &[i16]) -> Option<i16> {
+    let (&first, rest) = channels.split_first()?;
+    rest.iter().all(|&raw| raw == first).then_some(first)
+}
+
 #[derive(Debug, PartialEq)]
 pub(crate) struct HardwareVolumeSnapshot {
     pub(crate) volume: f64,
@@ -432,6 +481,64 @@ mod tests {
             );
             assert!(result.is_err());
         }
+    }
+
+    #[test]
+    fn the_first_level_of_an_attachment_is_the_original() {
+        let mut slot = OriginalVolumeSlot::new();
+        assert!(!slot.is_recorded("dac"));
+        slot.note("dac", "control", -12800);
+        // Later readings are Flick's own writes (a restart, an idle reopen).
+        slot.note("dac", "other", -6400);
+        let original = slot.take("dac").unwrap();
+        assert_eq!((original.raw, original.control), (-12800, "control"));
+        // Handing it back ends the record; the next reading starts a new one.
+        assert!(slot.take("dac").is_none());
+        slot.note("dac", "control", -3000);
+        assert_eq!(slot.take("dac").unwrap().raw, -3000);
+    }
+
+    #[test]
+    fn a_level_below_the_slider_floor_is_kept_exactly() {
+        // Normalised, anything under -80 dB reads 0.0, which would be written
+        // back as the device minimum; the raw value is what must survive.
+        let ranges = [VolumeRange { min: -127 * 256, max: 0, resolution: 256 }];
+        let original = -100 * 256;
+        assert_eq!(normalize_volume(original, &ranges), 0.0);
+        assert_ne!(quantize_volume(0.0, &ranges), original);
+        let mut slot = OriginalVolumeSlot::new();
+        slot.note("dac", (), original);
+        assert_eq!(slot.take("dac").unwrap().raw, original);
+    }
+
+    #[test]
+    fn another_dac_neither_takes_nor_keeps_the_record() {
+        let mut slot = OriginalVolumeSlot::new();
+        slot.note("first", (), -1000);
+        assert!(slot.take("second").is_none());
+        assert!(slot.is_recorded("first"));
+        // A different DAC's first reading replaces the stale record.
+        slot.note("second", (), -2000);
+        assert!(!slot.is_recorded("first"));
+        assert_eq!(slot.take("second").unwrap().raw, -2000);
+    }
+
+    #[test]
+    fn forgetting_ends_the_record() {
+        let mut slot = OriginalVolumeSlot::new();
+        slot.note("dac", (), -1000);
+        slot.forget();
+        assert!(slot.take("dac").is_none());
+        slot.note("dac", (), -500);
+        assert_eq!(slot.take("dac").unwrap().raw, -500);
+    }
+
+    #[test]
+    fn split_channels_have_no_single_level_to_hand_back() {
+        assert_eq!(common_channel_volume(&[-300]), Some(-300));
+        assert_eq!(common_channel_volume(&[-300, -300]), Some(-300));
+        assert_eq!(common_channel_volume(&[-300, -256]), None);
+        assert_eq!(common_channel_volume(&[]), None);
     }
 
     #[test]

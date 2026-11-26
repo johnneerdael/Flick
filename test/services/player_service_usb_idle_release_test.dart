@@ -322,9 +322,12 @@ class _Usb extends Fake implements Uac2Service {
     return true;
   }
 
+  final handBacks = <bool>[];
+
   @override
-  Future<void> releaseAndroidDirectUsbRuntime() async {
+  Future<void> releaseAndroidDirectUsbRuntime({bool handBack = true}) async {
     events.add('releaseDirectUsb');
+    handBacks.add(handBack);
   }
 
   @override
@@ -485,7 +488,10 @@ void main() {
 
       await tester.pump(const Duration(milliseconds: 200));
       expect(f.released, isTrue);
+      // Only the stream closes: the DAC stays claimed, so nothing is handed to
+      // Android and the DAC's original level is not written back.
       expect(f.events, ['releaseEngine']);
+      expect(f.usb.handBacks, isEmpty);
       expect(f.player.isUsbIdleReleaseTimerArmed, isFalse);
       // The paused UI state is untouched, and a refresh keeps the last report.
       final report = f.player.audioOutputDiagnosticsNotifier.value;

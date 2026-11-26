@@ -6,8 +6,8 @@ use crate::uac2::endpoint::{select_explicit_feedback_endpoint, FeedbackEndpointC
 use crate::uac2::iso_packet_validation::{iso_transfer_status_label, validate_iso_packet_descriptors};
 use crate::uac2::payload_audit_latch::PayloadAuditLatch;
 use crate::uac2::volume_control::{
-    normalize_volume, parse_uac2_volume_ranges, quantize_volume, read_hardware_volume_snapshot, volume_bounds,
-    AudioControlProtocol, VolumeRange,
+    common_channel_volume, normalize_volume, parse_uac2_volume_ranges, quantize_volume,
+    read_hardware_volume_snapshot, volume_bounds, AudioControlProtocol, OriginalVolumeSlot, VolumeRange,
 };
 use crate::uac2::{
     iso_packet_scheduler::{IsoPacketScheduler, IsoQueueGeometry},
@@ -1500,6 +1500,15 @@ static DIRECT_USB_DISCOVERY_DISABLED: Once = Once::new();
 static ANDROID_DIRECT_USB_ENABLED: AtomicBool = AtomicBool::new(true);
 static USB_SESSION_CLEAR_PENDING: AtomicBool = AtomicBool::new(false);
 static HARDWARE_VOLUME_GENERATION: AtomicU64 = AtomicU64::new(0);
+/// The DAC's volume before Flick first changed it. Outside DIRECT_USB_STATE so it
+/// outlives stream restarts, idle releases and a release that Flick takes straight back.
+static ORIGINAL_HARDWARE_VOLUME: Mutex<OriginalVolumeSlot<AndroidDirectUsbHardwareVolumeControl>> =
+    Mutex::new(OriginalVolumeSlot::new());
+/// What the next device clear does with that level; set by Java just before it.
+static ORIGINAL_VOLUME_ACTION: AtomicU32 = AtomicU32::new(ORIGINAL_VOLUME_KEEP);
+const ORIGINAL_VOLUME_KEEP: u32 = 0;
+const ORIGINAL_VOLUME_RESTORE: u32 = 1;
+const ORIGINAL_VOLUME_FORGET: u32 = 2;
 
 /// Only one negotiation or output session can use the claimed interfaces.
 /// Serialize ownership transitions with device clear before Android releases them.
@@ -1783,6 +1792,7 @@ pub(crate) fn with_live_usb_reconnect<T>(
 fn clear_android_usb_device_state() {
     // Finish any in-progress Feature Unit I/O before Android releases its claims.
     let _volume_hold = ANDROID_DIRECT_HARDWARE_VOLUME_MUTEX.lock();
+    finish_original_hardware_volume();
     release_idle_lock();
     if DIRECT_USB_LIFECYCLE_STATE.lock().engine_state != AndroidDirectUsbEngineState::Fallback {
         set_android_usb_engine_state(AndroidDirectUsbEngineState::Idle, None);
@@ -3806,6 +3816,121 @@ pub fn android_direct_set_hardware_mute(muted: bool) -> Result<(), String> {
     Ok(())
 }
 
+fn original_volume_device_key(device: &AndroidDirectUsbDevice) -> String {
+    format!(
+        "{}:{:04x}:{:04x}",
+        device.device_name.as_deref().unwrap_or_default(),
+        device.vendor_id,
+        device.product_id
+    )
+}
+
+fn read_channel_volumes(
+    device: &AndroidDirectUsbDevice,
+    control: &AndroidDirectUsbHardwareVolumeControl,
+) -> Result<Vec<i16>, String> {
+    control
+        .volume_channels
+        .iter()
+        .map(|&channel| {
+            read_feature_unit_i16_control(
+                device,
+                control.interface_number,
+                control.feature_unit_id,
+                channel,
+                control.protocol.current_request(),
+                UAC2_FEATURE_UNIT_VOLUME_CONTROL,
+            )
+        })
+        .collect()
+}
+
+/// Remembers the level a DAC has the first time its volume control is found
+/// during an attachment, which is before Flick has written to it. Caller holds
+/// ANDROID_DIRECT_HARDWARE_VOLUME_MUTEX.
+fn note_original_hardware_volume(
+    device: &AndroidDirectUsbDevice,
+    control: &AndroidDirectUsbHardwareVolumeControl,
+) {
+    let key = original_volume_device_key(device);
+    if ORIGINAL_HARDWARE_VOLUME.lock().is_recorded(&key) {
+        return;
+    }
+    match read_channel_volumes(device, control).map(|raw| common_channel_volume(&raw)) {
+        Ok(Some(raw)) => {
+            log_info!("[USB] Original hardware volume of '{}': raw={raw}", device.product_name);
+            ORIGINAL_HARDWARE_VOLUME.lock().note(&key, control.clone(), raw);
+        }
+        Ok(None) => log_warn!("[USB] Original hardware volume not recorded: channels disagree"),
+        Err(error) => log_warn!("[USB] Original hardware volume not recorded: {error}"),
+    }
+}
+
+/// Java's request for the device clear that follows: write the original level
+/// back (Android gets the DAC), forget it (the DAC is gone) or keep it (Flick
+/// holds on or takes the DAC straight back).
+pub fn set_android_usb_original_volume_action(action: u32) -> bool {
+    if action > ORIGINAL_VOLUME_FORGET {
+        return false;
+    }
+    ORIGINAL_VOLUME_ACTION.store(action, Ordering::SeqCst);
+    true
+}
+
+/// Settles the original level as the device is cleared, which is when Android's
+/// own driver gets the DAC back. The stream has stopped by then; the control
+/// transfers need only the registered device. Best effort: a failure is logged,
+/// and the record ends either way. Caller holds ANDROID_DIRECT_HARDWARE_VOLUME_MUTEX.
+fn finish_original_hardware_volume() {
+    match ORIGINAL_VOLUME_ACTION.swap(ORIGINAL_VOLUME_KEEP, Ordering::SeqCst) {
+        ORIGINAL_VOLUME_FORGET => ORIGINAL_HARDWARE_VOLUME.lock().forget(),
+        ORIGINAL_VOLUME_RESTORE => {
+            let Some(device) = DIRECT_USB_STATE.lock().as_ref().map(|state| state.device.clone()) else {
+                return;
+            };
+            let Some(original) = ORIGINAL_HARDWARE_VOLUME
+                .lock()
+                .take(&original_volume_device_key(&device))
+            else {
+                return;
+            };
+            match restore_original_hardware_volume(&device, &original.control, original.raw) {
+                Ok(true) => log_info!("[USB] Restored original hardware volume: raw={}", original.raw),
+                Ok(false) => {}
+                Err(error) => log_warn!("[USB] Original hardware volume not restored: {error}"),
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Writes `raw`, exactly as the DAC reported it, back to every channel and reads
+/// it back. Ok(false) when it was already there.
+fn restore_original_hardware_volume(
+    device: &AndroidDirectUsbDevice,
+    control: &AndroidDirectUsbHardwareVolumeControl,
+    raw: i16,
+) -> Result<bool, String> {
+    if read_channel_volumes(device, control)?.iter().all(|&current| current == raw) {
+        return Ok(false);
+    }
+    for &channel in &control.volume_channels {
+        write_feature_unit_i16_control(
+            device,
+            control.interface_number,
+            control.feature_unit_id,
+            channel,
+            UAC2_FEATURE_UNIT_VOLUME_CONTROL,
+            raw,
+        )?;
+    }
+    let readback = common_channel_volume(&read_channel_volumes(device, control)?);
+    if readback != Some(raw) {
+        return Err(format!("read back {readback:?} after writing {raw}"));
+    }
+    Ok(true)
+}
+
 fn inspect_android_usb_capabilities(
     device: &AndroidDirectUsbDevice,
 ) -> Result<Option<AndroidDirectUsbCapabilityModel>, String> {
@@ -4224,6 +4349,8 @@ fn create_android_usb_backend_inner(
     };
     set_hardware_volume_control(hardware_volume_control.clone());
     if let Some(control) = hardware_volume_control.as_ref() {
+        // Before a pending restore or any other write of Flick's own.
+        note_original_hardware_volume(&state.device, control);
         log_info!(
             "[USB] Hardware volume control found: feature_unit={}, interface={}, min={}, max={}, res={}, protocol={:?}, channels={:?}, mute_channel={:?}",
             control.feature_unit_id,
