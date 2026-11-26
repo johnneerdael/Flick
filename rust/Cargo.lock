@@ -1968,7 +1968,6 @@ dependencies = [
  "jni 0.22.4",
  "jwalk",
  "libc",
- "libusb1-sys",
  "lofty",
  "log",
  "ndk-context",

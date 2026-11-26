@@ -3,10 +3,6 @@
 // ponytail: feature in progress, not all public API is wired yet
 #![allow(dead_code)]
 
-#[cfg(all(feature = "uac2", target_os = "android"))]
-mod android_direct;
-#[cfg(feature = "uac2")]
-mod usbdac_adapter;
 #[cfg(feature = "uac2")]
 mod audio_format;
 #[cfg(feature = "uac2")]
@@ -17,8 +13,6 @@ mod audio_sink;
 mod backend;
 #[cfg(feature = "uac2")]
 mod capabilities;
-#[cfg(feature = "uac2")]
-mod clock_resolution;
 #[cfg(feature = "uac2")]
 mod compatibility;
 #[cfg(feature = "uac2")]
@@ -48,25 +42,13 @@ mod fallback_handler;
 #[cfg(feature = "uac2")]
 mod format_negotiation;
 #[cfg(feature = "uac2")]
-pub(crate) mod iso_packet_scheduler;
-#[cfg(feature = "uac2")]
-mod iso_packet_validation;
-#[cfg(feature = "uac2")]
-mod iso_transport_loss;
-#[cfg(feature = "uac2")]
 mod logging;
-#[cfg(feature = "uac2")]
-mod output_position;
-#[cfg(feature = "uac2")]
-mod payload_audit_latch;
 #[cfg(feature = "uac2")]
 mod quirk;
 #[cfg(feature = "uac2")]
 mod registry;
 #[cfg(feature = "uac2")]
 mod ring_buffer;
-#[cfg(feature = "uac2")]
-mod ring_target;
 #[cfg(feature = "uac2")]
 mod stream_config;
 #[cfg(feature = "uac2")]
@@ -79,26 +61,29 @@ mod transfer_buffer;
 mod transfer_manager;
 #[cfg(feature = "uac2")]
 mod uac_version;
-#[cfg(feature = "uac2")]
-mod volume_control;
 
 #[cfg(all(test, feature = "uac2"))]
 mod tests;
 
-#[cfg(all(feature = "uac2", target_os = "android"))]
-pub(crate) use android_direct::android_direct_output_latency;
-#[cfg(all(feature = "uac2", target_os = "android"))]
-pub(crate) use android_direct::with_live_usb_reconnect;
-#[cfg(all(feature = "uac2", target_os = "android"))]
-pub(crate) use output_position::audible_position_secs;
-#[cfg(all(feature = "uac2", target_os = "android"))]
-pub use android_direct::{
+#[cfg(feature = "uac2")]
+mod usbdac_adapter;
+
+// Direct USB DAC output. The engine, the JNI layer and the FRB API call these;
+// they are Android-only in use, but the adapter builds and is tested on the host.
+#[cfg(feature = "uac2")]
+#[allow(unused_imports)]
+pub(crate) use usbdac_adapter::{
+    android_direct_output_latency, audible_position_secs, with_live_usb_reconnect,
+};
+#[cfg(feature = "uac2")]
+#[allow(unused_imports)]
+pub use usbdac_adapter::{
     android_direct_cached_hardware_mute, android_direct_cached_hardware_volume,
     android_direct_debug_state, android_direct_has_hardware_volume_control,
     android_direct_output_signature, android_direct_preferred_sample_rate,
     android_direct_queue_hardware_volume_restore, android_direct_set_hardware_mute,
-    android_direct_set_hardware_volume,
-    android_direct_usb_enabled, android_direct_verify_hardware_volume_health, clear_android_usb_device,
+    android_direct_set_hardware_volume, android_direct_usb_enabled,
+    android_direct_verify_hardware_volume_health, clear_android_usb_device,
     create_android_usb_backend, force_release_usb_session, is_usb_session_active,
     mark_android_usb_fallback, negotiate_android_direct_output_sample_rate,
     register_android_usb_device, set_android_direct_usb_enabled, set_android_usb_dop_mode,
