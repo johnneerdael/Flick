@@ -156,22 +156,38 @@ DAC that quantises its readback still crosses the whole range in 16 presses.
 
 After 30 s of continuous pause on the libusb direct path the isochronous stream
 is closed and Flick keeps the DAC claimed (the native idle lock), so Android's
-USB audio driver cannot take it. Native clears the DAC's volume control with the
-stream, so while it is closed:
+USB audio driver cannot take it. The DAC's volume control belongs to its
+AudioControl interface, not to the stream: its requests are synchronous control
+transfers on the registered device. While the idle lock holds the DAC, native
+therefore keeps the control, its ranges and the cached level and mute after the
+stream has stopped, and level, mute and the health readback work without a stream.
+The control is rediscovered, and its generation bumped, by the next stream, and
+it ends with the registration (unplug, another DAC, handing the DAC back). Without
+the idle lock nothing keeps Android off the DAC once the stream has stopped, so the
+control is dropped with the stream as before.
 
-- The tier is frozen and `Uac2Service` keeps the last hardware-volume view of the
-  same registered DAC (`holdHardwareVolumeView`): level, mute state and writable
-  flag stay what they were, and a route refresh cannot read the gap as lost
-  volume authority. The volume UI, the keys and the media-session volume therefore
-  do not flip to the system volume and back.
+While the stream is closed:
+
+- Level changes (slider, volume keys, media-session volume) and mute go straight to
+  the DAC. Nothing reopens the stream, and the 30 s countdown is neither started
+  nor restarted by them: moving the volume is not a reason to wake the DAC.
+- The DAC is not polled by the periodic readback; the next stream reads its level
+  itself and checks it against the last verified level.
+- The tier is frozen until the stream is back, so the reopen's own route refresh
+  cannot read the gap as lost volume authority.
 - The volume keys stay consumed while the DAC is claimed
   (`shouldConsumeDacVolumeKey`), not only while its control exists.
-- Every DAC write (slider, keys, media-session volume, mute) goes through
-  `PlayerService._withUsbHardwareControl`: it reopens the stream first, holds the
-  idle release off until the write has been read back, then starts the 30 s again.
-  The writes themselves are still serialised and coalesced by `LatestValueWriter`,
-  so a drag across a reopen reopens once and ends on the newest level. If the
-  stream cannot be reopened nothing is written and the level shown is unchanged.
+- Every control request (level, mute, readback) runs through
+  `PlayerService._withUsbHardwareControl`, which keeps the idle release off until
+  the request has finished, so the stream is never closed across a request's
+  safety pause or between its write and its readback. A release that came due in
+  the meantime is armed again afterwards. The writes themselves are still
+  serialised and coalesced by `LatestValueWriter`, and in native by the hardware
+  volume mutex and the route generation.
+- The DAC's original level (handed back when Android gets the DAC) and the queued
+  restore of the saved level need no stream either: the first is written at
+  registration clear, the second is applied at once when the control exists and
+  otherwise before the first stream's first transfer.
 
 ## Notification Ducking
 

@@ -28,9 +28,9 @@ internal fun volumeKeyDirection(keyCode: Int): Int = when (keyCode) {
 /**
  * Whether the activity consumes a volume key for the DAC. Dart's flag says the
  * DAC owns the keys; the claim says the DAC is still Flick's. The claim, not the
- * DAC's volume control, because that control only exists while a stream is open
- * and a stream closed by the idle release must keep the keys on the DAC rather
- * than let them fall through to the system volume.
+ * DAC's volume control: a DAC Flick still holds must keep the keys even in a
+ * moment its control is not there (rediscovered with each stream), rather than
+ * let them fall through to a system volume that does not reach a libusb stream.
  */
 internal fun shouldConsumeDacVolumeKey(
     direction: Int,

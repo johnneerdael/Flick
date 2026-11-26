@@ -415,6 +415,14 @@ impl AndroidDirectUsbDevice {
             return Err(std::io::Error::other("AudioControl interface is not claimed"));
         }
         let length = u16::try_from(data.len()).map_err(std::io::Error::other)?;
+        #[cfg(test)]
+        {
+            if let Some(result) =
+                fake_feature_unit::dispatch(self.fd, request_type, request, value, index, data)
+            {
+                return result;
+            }
+        }
         let transfer = UsbfsControlTransfer {
             request_type,
             request,
@@ -1726,7 +1734,8 @@ static ANDROID_DIRECT_USB_ENABLED: AtomicBool = AtomicBool::new(true);
 static USB_SESSION_CLEAR_PENDING: AtomicBool = AtomicBool::new(false);
 static HARDWARE_VOLUME_GENERATION: AtomicU64 = AtomicU64::new(0);
 /// The DAC's volume before Flick first changed it. Outside DIRECT_USB_STATE so it
-/// outlives stream restarts, idle releases and a release that Flick takes straight back.
+/// outlives the registration: a release that Flick takes straight back clears it and
+/// registers the DAC again, and the record must carry over.
 static ORIGINAL_HARDWARE_VOLUME: Mutex<OriginalVolumeSlot<AndroidDirectUsbHardwareVolumeControl>> =
     Mutex::new(OriginalVolumeSlot::new());
 /// What the next device clear does with that level; set by Java just before it.
@@ -3394,13 +3403,36 @@ fn set_packet_schedule_preview(packet_schedule_frames_preview: Vec<u32>) {
 }
 
 fn set_stream_active(active: bool) {
+    // Read before the state lock is taken: the two are never held together.
+    let idle_lock_held = DIRECT_USB_LOCK.lock().is_some();
     if let Some(state) = DIRECT_USB_STATE.lock().as_mut() {
-        state.stream_active = active;
-        if !active {
-            state.hardware_volume_control = None;
-            state.hardware_volume_normalized = None;
-            state.hardware_mute_active = None;
-            state.hardware_volume_generation = HARDWARE_VOLUME_GENERATION.fetch_add(1, Ordering::Relaxed);
+        state.set_stream_active(active, idle_lock_held);
+    }
+}
+
+impl AndroidDirectUsbState {
+    /// Records the stream starting or stopping.
+    ///
+    /// The DAC's volume control belongs to its AudioControl interface, not to the
+    /// isochronous stream: its requests are synchronous control transfers on the
+    /// registered device. While the idle lock keeps the DAC claimed after the
+    /// stream stops (the 30 s idle release, a track change), the control, its
+    /// ranges and the cached level and mute therefore stay valid, and so does a
+    /// write that was in flight. The generation is not bumped either: the route
+    /// has not changed, and the next stream's discovery bumps it when it
+    /// rediscovers the control.
+    ///
+    /// Without the idle lock nothing keeps Android's USB audio driver off the DAC
+    /// once the stream has stopped, so the control and what was read through it
+    /// are dropped, and writes in flight against it fail as a changed route.
+    fn set_stream_active(&mut self, active: bool, idle_lock_held: bool) {
+        self.stream_active = active;
+        if !active && !idle_lock_held {
+            self.hardware_volume_control = None;
+            self.hardware_volume_normalized = None;
+            self.hardware_mute_active = None;
+            self.hardware_volume_generation =
+                HARDWARE_VOLUME_GENERATION.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -10199,5 +10231,405 @@ mod pcm_ring_hold_tests {
         publish_inflight_music(&slots, &stats);
         assert_eq!(stats.inflight_music_frames.load(Ordering::Relaxed), 0);
         assert_eq!(stats.output_latency_frames(), 2_400);
+    }
+}
+
+/// A DAC's Feature Unit, answered in-process instead of through usbfs, for the
+/// control transfers `AndroidDirectUsbDevice::feature_unit_control` sends.
+#[cfg(test)]
+mod fake_feature_unit {
+    use super::*;
+    use crossbeam_channel::Receiver;
+    use std::collections::HashMap;
+
+    pub(super) const INTERFACE: u8 = 0;
+    pub(super) const UNIT: u8 = 5;
+    const MUTE_SELECTOR: u16 = 0x0100;
+    const VOLUME_SELECTOR: u16 = 0x0200;
+
+    #[derive(Default)]
+    pub(super) struct FakeDac {
+        /// Raw level per channel; index 0 is the master channel.
+        pub volume: [i16; 3],
+        pub muted: bool,
+        /// Every volume SET_CUR, in order, as (channel, raw).
+        pub volume_writes: Vec<(u16, i16)>,
+        pub mute_writes: Vec<bool>,
+        pub reads: usize,
+        /// Makes every transfer fail, as an unreachable DAC would.
+        pub unreachable: bool,
+        /// Holds the next volume SET_CUR: reports on the sender that it has
+        /// arrived, then waits for the receiver before it takes effect.
+        pub hold_next_volume_write: Option<(Sender<()>, Receiver<()>)>,
+    }
+
+    type Dac = Arc<StdMutex<FakeDac>>;
+    static DACS: Lazy<StdMutex<HashMap<RawFd, Dac>>> = Lazy::new(|| StdMutex::new(HashMap::new()));
+
+    pub(super) fn install(fd: RawFd, dac: Dac) {
+        DACS.lock().unwrap().insert(fd, dac);
+    }
+
+    pub(super) fn remove(fd: RawFd) {
+        DACS.lock().unwrap().remove(&fd);
+    }
+
+    /// None when no fake DAC answers on `fd`, so the real transfer goes ahead.
+    pub(super) fn dispatch(
+        fd: RawFd,
+        request_type: u8,
+        request: u8,
+        value: u16,
+        index: u16,
+        data: &mut [u8],
+    ) -> Option<std::io::Result<usize>> {
+        let dac = DACS.lock().unwrap().get(&fd).cloned()?;
+        Some(answer(&dac, request_type, request, value, index, data))
+    }
+
+    fn answer(
+        dac: &Dac,
+        request_type: u8,
+        request: u8,
+        value: u16,
+        index: u16,
+        data: &mut [u8],
+    ) -> std::io::Result<usize> {
+        if dac.lock().unwrap().unreachable {
+            return Err(std::io::Error::other("DAC unreachable"));
+        }
+        let addressed = (index & 0xff, index >> 8);
+        if addressed != (u16::from(INTERFACE), u16::from(UNIT)) || request != UAC2_REQUEST_SET_CUR {
+            return Err(std::io::Error::other(format!(
+                "unexpected request 0x{request:02x} to {addressed:?}"
+            )));
+        }
+        let (selector, channel) = (value & 0xff00, usize::from(value & 0xff));
+        let reading = request_type & USB_DIR_IN != 0;
+        match (selector, reading) {
+            (VOLUME_SELECTOR, true) => {
+                let mut dac = dac.lock().unwrap();
+                dac.reads += 1;
+                data.copy_from_slice(&dac.volume[channel].to_le_bytes());
+            }
+            (VOLUME_SELECTOR, false) => {
+                let gate = dac.lock().unwrap().hold_next_volume_write.take();
+                if let Some((arrived, release)) = gate {
+                    arrived.send(()).unwrap();
+                    release.recv().unwrap();
+                }
+                let raw = i16::from_le_bytes([data[0], data[1]]);
+                let mut dac = dac.lock().unwrap();
+                dac.volume[channel] = raw;
+                dac.volume_writes.push((channel as u16, raw));
+            }
+            (MUTE_SELECTOR, true) => {
+                let mut dac = dac.lock().unwrap();
+                dac.reads += 1;
+                data[0] = u8::from(dac.muted);
+            }
+            (MUTE_SELECTOR, false) => {
+                let mut dac = dac.lock().unwrap();
+                dac.muted = data[0] != 0;
+                let muted = dac.muted;
+                dac.mute_writes.push(muted);
+            }
+            _ => return Err(std::io::Error::other("unknown control selector")),
+        }
+        Ok(data.len())
+    }
+}
+
+/// The DAC's volume control, level and mute are the registration's, not the
+/// stream's: they stay usable while the idle lock holds a DAC whose stream has
+/// closed, and they go with the registration.
+#[cfg(test)]
+mod hardware_volume_without_a_stream_tests {
+    use super::fake_feature_unit::{FakeDac, INTERFACE, UNIT};
+    use super::*;
+
+    const FD: RawFd = -9_001;
+    const FLICK_RAW: i16 = -64 * 256;
+    const ORIGINAL_RAW: i16 = -20 * 256;
+    static SERIAL: StdMutex<()> = StdMutex::new(());
+
+    fn control() -> AndroidDirectUsbHardwareVolumeControl {
+        AndroidDirectUsbHardwareVolumeControl {
+            interface_number: INTERFACE,
+            feature_unit_id: UNIT,
+            protocol: AudioControlProtocol::Uac2,
+            volume_channels: vec![1, 2],
+            ranges: vec![VolumeRange { min: -80 * 256, max: 0, resolution: 256 }],
+            mute_channel: Some(0),
+            min_volume_raw: -80 * 256,
+            max_volume_raw: 0,
+            resolution_raw: 256,
+        }
+    }
+
+    fn device() -> AndroidDirectUsbDevice {
+        AndroidDirectUsbDevice {
+            fd: FD,
+            _fd_owner: Arc::new(AndroidDirectUsbOwnedFd(FD)),
+            claimed_interfaces: Arc::from(vec![INTERFACE]),
+            vendor_id: 0x1234,
+            product_id: 0x5678,
+            product_name: "test DAC".to_string(),
+            device_name: Some("/dev/bus/usb/001/002".to_string()),
+        }
+    }
+
+    fn state(stream_active: bool, control: Option<AndroidDirectUsbHardwareVolumeControl>) -> AndroidDirectUsbState {
+        let level = control.as_ref().map(|control| normalize_volume(FLICK_RAW, &control.ranges));
+        AndroidDirectUsbState {
+            device: device(),
+            requested_playback_format: None,
+            playback_format: None,
+            lock_requested: true,
+            stream_active,
+            active_transport: None,
+            capability_model: None,
+            clock_status: None,
+            clock_control_attempted: false,
+            clock_control_succeeded: false,
+            clock_verification_passed: false,
+            require_verified_rate: false,
+            dac_clock_policy: DacClockPolicy::AllowUnverified,
+            dac_mode: DacMode::FullControl,
+            last_error: None,
+            direct_mode_refusal_reason: None,
+            usb_stream_stable: false,
+            bit_perfect_verified: false,
+            software_volume_active: false,
+            hardware_mute_active: level.map(|_| false),
+            hardware_volume_normalized: level,
+            hardware_volume_control: control,
+            hardware_volume_generation: HARDWARE_VOLUME_GENERATION.fetch_add(1, Ordering::Relaxed),
+            hardware_volume_error: None,
+            pending_hardware_volume_restore: None,
+            packet_schedule_frames_preview: Vec::new(),
+            runtime_stats: None,
+        }
+    }
+
+    /// One registered fake DAC for one test. Serialised: the registration, the
+    /// original-level record and the fake transport are process-wide.
+    struct Registered {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        dac: Arc<StdMutex<FakeDac>>,
+    }
+
+    impl Registered {
+        fn new(stream_active: bool, with_control: bool) -> Self {
+            let serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            reset_globals();
+            let dac = Arc::new(StdMutex::new(FakeDac {
+                volume: [FLICK_RAW; 3],
+                ..FakeDac::default()
+            }));
+            fake_feature_unit::install(FD, dac.clone());
+            *DIRECT_USB_STATE.lock() = Some(state(stream_active, with_control.then(control)));
+            Self { _serial: serial, dac }
+        }
+
+        fn generation(&self) -> u64 {
+            DIRECT_USB_STATE.lock().as_ref().unwrap().hardware_volume_generation
+        }
+
+        /// What the stream stopping does while the idle lock holds the DAC. The
+        /// lock itself needs a live libusb handle, so its presence is stated.
+        fn stop_stream_holding_the_dac(&self) {
+            DIRECT_USB_STATE.lock().as_mut().unwrap().set_stream_active(false, true);
+        }
+
+        fn raw(&self) -> Vec<i16> {
+            self.dac.lock().unwrap().volume[1..].to_vec()
+        }
+    }
+
+    impl Drop for Registered {
+        fn drop(&mut self) {
+            fake_feature_unit::remove(FD);
+            reset_globals();
+        }
+    }
+
+    fn reset_globals() {
+        *DIRECT_USB_STATE.lock() = None;
+        ORIGINAL_HARDWARE_VOLUME.lock().forget();
+        ORIGINAL_VOLUME_ACTION.store(ORIGINAL_VOLUME_KEEP, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn a_stopped_stream_keeps_the_control_while_the_idle_lock_holds_the_dac() {
+        let mut stopped = state(true, Some(control()));
+        let (generation, level) = (stopped.hardware_volume_generation, stopped.hardware_volume_normalized);
+
+        stopped.set_stream_active(false, true);
+
+        assert!(!stopped.stream_active);
+        assert!(stopped.hardware_volume_control.is_some());
+        assert_eq!(stopped.hardware_volume_normalized, level);
+        assert_eq!(stopped.hardware_mute_active, Some(false));
+        assert_eq!(stopped.hardware_volume_generation, generation);
+    }
+
+    #[test]
+    fn a_stopped_stream_without_the_idle_lock_drops_the_control() {
+        let mut stopped = state(true, Some(control()));
+        let generation = stopped.hardware_volume_generation;
+
+        stopped.set_stream_active(false, false);
+
+        assert!(!stopped.stream_active);
+        assert!(stopped.hardware_volume_control.is_none());
+        assert_eq!(stopped.hardware_volume_normalized, None);
+        assert_eq!(stopped.hardware_mute_active, None);
+        assert_ne!(stopped.hardware_volume_generation, generation);
+    }
+
+    #[test]
+    fn a_starting_stream_changes_nothing() {
+        let mut starting = state(false, Some(control()));
+        let generation = starting.hardware_volume_generation;
+
+        starting.set_stream_active(true, false);
+
+        assert!(starting.stream_active);
+        assert!(starting.hardware_volume_control.is_some());
+        assert_eq!(starting.hardware_volume_generation, generation);
+    }
+
+    #[test]
+    fn level_mute_and_readback_work_with_the_stream_stopped() {
+        let dac = Registered::new(true, true);
+        dac.stop_stream_holding_the_dac();
+        let generation = dac.generation();
+        assert!(android_direct_has_hardware_volume_control());
+
+        android_direct_set_hardware_volume(0.5).unwrap();
+        let wrote = quantize_volume(0.5, &control().ranges);
+        assert_eq!(dac.raw(), vec![wrote, wrote]);
+        assert_eq!(android_direct_cached_hardware_volume(), Some(normalize_volume(wrote, &control().ranges)));
+
+        android_direct_set_hardware_mute(true).unwrap();
+        assert!(dac.dac.lock().unwrap().muted);
+        assert_eq!(android_direct_cached_hardware_mute(), Some(true));
+        assert_eq!(android_direct_cached_hardware_volume(), Some(normalize_volume(wrote, &control().ranges)));
+
+        // A knob turned on the DAC is seen by the health readback.
+        dac.dac.lock().unwrap().volume = [ORIGINAL_RAW; 3];
+        assert_eq!(android_direct_verify_hardware_volume_health(), Ok(true));
+        assert_eq!(android_direct_cached_hardware_volume(), Some(normalize_volume(ORIGINAL_RAW, &control().ranges)));
+
+        // None of it was a change of route.
+        assert_eq!(dac.generation(), generation);
+        let debug = android_direct_debug_state();
+        assert!(debug.hardware_volume_supported && !debug.stream_active);
+    }
+
+    #[test]
+    fn a_dac_that_cannot_be_reached_fails_the_write_without_losing_the_control() {
+        let dac = Registered::new(true, true);
+        dac.stop_stream_holding_the_dac();
+        dac.dac.lock().unwrap().unreachable = true;
+
+        assert!(android_direct_set_hardware_volume(0.5).is_err());
+        assert!(android_direct_verify_hardware_volume_health().is_err());
+
+        // The error is the DAC's; the control is still the registration's.
+        assert!(android_direct_has_hardware_volume_control());
+        dac.dac.lock().unwrap().unreachable = false;
+        android_direct_set_hardware_volume(0.5).unwrap();
+    }
+
+    #[test]
+    fn a_write_in_flight_is_not_failed_by_the_stream_stopping() {
+        let dac = Registered::new(true, true);
+        let (arrived_tx, arrived) = crossbeam_channel::bounded(1);
+        let (release, release_rx) = crossbeam_channel::bounded(1);
+        dac.dac.lock().unwrap().hold_next_volume_write = Some((arrived_tx, release_rx));
+
+        let write = thread::spawn(|| android_direct_set_hardware_volume(0.25));
+        arrived.recv_timeout(Duration::from_secs(5)).expect("the write reached the DAC");
+        let generation = dac.generation();
+        dac.stop_stream_holding_the_dac();
+        assert_eq!(dac.generation(), generation, "a stopped stream is not a new route");
+        release.send(()).unwrap();
+
+        assert_eq!(write.join().unwrap(), Ok(()));
+        let wrote = quantize_volume(0.25, &control().ranges);
+        assert_eq!(dac.raw(), vec![wrote, wrote]);
+        assert_eq!(android_direct_cached_hardware_volume(), Some(normalize_volume(wrote, &control().ranges)));
+    }
+
+    #[test]
+    fn the_stream_that_follows_rediscovers_the_control_as_a_new_route() {
+        let dac = Registered::new(true, true);
+        dac.stop_stream_holding_the_dac();
+        let generation = dac.generation();
+
+        // Discovery at the next stream start.
+        set_hardware_volume_control(Some(control()));
+
+        assert_ne!(dac.generation(), generation);
+        assert_eq!(android_direct_cached_hardware_volume(), None, "read again, not carried over");
+        assert!(android_direct_has_hardware_volume_control());
+    }
+
+    #[test]
+    fn clearing_the_registration_ends_the_control() {
+        let dac = Registered::new(true, true);
+        dac.stop_stream_holding_the_dac();
+
+        clear_android_usb_device_state();
+
+        assert!(!android_direct_has_hardware_volume_control());
+        assert!(android_direct_set_hardware_volume(0.5).is_err());
+        assert!(android_direct_set_hardware_mute(true).is_err());
+        assert!(android_direct_verify_hardware_volume_health().is_err());
+        assert!(dac.dac.lock().unwrap().volume_writes.is_empty());
+    }
+
+    #[test]
+    fn the_original_level_is_handed_back_after_the_stream_closed() {
+        let dac = Registered::new(true, true);
+        // Found with the first stream, before Flick wrote anything.
+        dac.dac.lock().unwrap().volume = [ORIGINAL_RAW; 3];
+        {
+            let _hold = ANDROID_DIRECT_HARDWARE_VOLUME_MUTEX.lock();
+            note_original_hardware_volume(&device(), &control());
+        }
+        android_direct_set_hardware_volume(0.2).unwrap();
+        assert_ne!(dac.raw(), vec![ORIGINAL_RAW; 2]);
+        dac.stop_stream_holding_the_dac();
+
+        // Android gets the DAC: the registration is cleared with the restore action.
+        assert!(set_android_usb_original_volume_action(ORIGINAL_VOLUME_RESTORE));
+        clear_android_usb_device_state();
+
+        assert_eq!(dac.raw(), vec![ORIGINAL_RAW; 2]);
+        assert!(DIRECT_USB_STATE.lock().is_none());
+    }
+
+    #[test]
+    fn a_restore_on_connect_is_applied_at_once_with_a_control_and_staged_without() {
+        let dac = Registered::new(false, true);
+        dac.stop_stream_holding_the_dac();
+        android_direct_queue_hardware_volume_restore(0.3).unwrap();
+        let wrote = quantize_volume(0.3, &control().ranges);
+        assert_eq!(dac.raw(), vec![wrote, wrote]);
+        assert_eq!(DIRECT_USB_STATE.lock().as_ref().unwrap().pending_hardware_volume_restore, None);
+
+        // A DAC registered a moment ago has not had its control discovered yet:
+        // the level waits for the first stream, which applies it before audio.
+        drop(dac);
+        let fresh = Registered::new(false, false);
+        android_direct_queue_hardware_volume_restore(0.3).unwrap();
+        assert!(fresh.dac.lock().unwrap().volume_writes.is_empty());
+        assert_eq!(
+            DIRECT_USB_STATE.lock().as_ref().unwrap().pending_hardware_volume_restore,
+            Some(0.3)
+        );
     }
 }

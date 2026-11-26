@@ -169,8 +169,6 @@ class _Rust extends Fake implements RustAudioService {
   _Rust(this.events);
 
   final List<String> events;
-  void Function()? onPrepare;
-  void Function()? onRelease;
   @override
   final stateNotifier = ValueNotifier(RustPlaybackState.idle);
   @override
@@ -193,14 +191,12 @@ class _Rust extends Fake implements RustAudioService {
   Future<void> prepareEngine({int? preferredSampleRate}) async {
     events.add('prepareEngine');
     if (prepareFails) throw StateError('engine would not start');
-    onPrepare?.call();
   }
 
   @override
   Future<void> releaseEngine() async {
     events.add('releaseEngine');
     stateNotifier.value = RustPlaybackState.idle;
-    onRelease?.call();
   }
 
   @override
@@ -241,7 +237,8 @@ class _Usb extends Fake implements Uac2Service {
   final bool hardware;
   final detached = StreamController<String?>.broadcast();
 
-  /// The DAC's volume control is only discovered while the stream is open.
+  /// The DAC's volume control. Native keeps it while the stream is released
+  /// and Flick still holds the DAC, so releasing the stream does not touch it.
   bool control = true;
   double volume = 0.4;
   bool muted = false;
@@ -249,27 +246,14 @@ class _Usb extends Fake implements Uac2Service {
 
   /// Holds each volume write until completed, like a slow USB control transfer.
   Completer<void>? writeGate;
-  Uac2DeviceStatus? _lastView;
 
   @override
-  bool holdsReleasedStreamVolume = false;
-
-  /// The route status as the real service publishes it, hold included.
-  @override
-  Uac2DeviceStatus get currentDeviceStatus {
-    var status = _status(
-      hardware: hardware,
-      control: control,
-      volume: volume,
-      muted: muted,
-    );
-    if (holdsReleasedStreamVolume) {
-      status = holdHardwareVolumeView(_lastView, status)!;
-    } else {
-      _lastView = status;
-    }
-    return status;
-  }
+  Uac2DeviceStatus get currentDeviceStatus => _status(
+    hardware: hardware,
+    control: control,
+    volume: volume,
+    muted: muted,
+  );
 
   @override
   bool isBitPerfectEnabledSync = false;
@@ -382,9 +366,7 @@ class _Manager extends Fake implements AudioEngineManager {
 class _Fixture {
   _Fixture({bool hardware = false}) {
     usb = _Usb(events, hardware: hardware);
-    rust = _Rust(events)
-      ..onRelease = (() => usb.control = false)
-      ..onPrepare = (() => usb.control = true);
+    rust = _Rust(events);
     session = _Session();
     engine = RustAudioEngine(
       playbackMode: AudioEngineType.usbDacExperimental,
@@ -436,11 +418,6 @@ class _Fixture {
   }
 
   bool get released => player.isUsbEngineIdleReleased;
-
-  /// The fake engine's own report replaces the real one when the stream reopens;
-  /// put the direct USB report back so the next idle release is allowed.
-  void reportDirectUsb() =>
-      player.audioOutputDiagnosticsNotifier.value = _diagnostics();
 }
 
 void main() {
@@ -737,7 +714,7 @@ void main() {
       await f.pauseAt(const Duration(seconds: 42));
       await tester.pump(const Duration(seconds: 31));
       expect(f.released, isTrue);
-      expect(f.usb.control, isFalse); // The stream took the control with it.
+      expect(f.usb.control, isTrue); // Native keeps it while Flick holds the DAC.
 
       await f.player.reconcileVolumeForTesting();
       await f.player.reconcileVolumeForTesting();
@@ -753,7 +730,6 @@ void main() {
       await f.player.resume();
 
       // Reopen reads the DAC's level again; nothing writes it.
-      expect(f.usb.control, isTrue);
       expect(f.events.where((e) => e.startsWith('setVolume')), isEmpty);
       expect(f.player.usbVolumeSafetyBlockedNotifier.value, isFalse);
       expect(f.player.volumeTierNotifier.value, VolumeTier.hardware);
@@ -762,7 +738,7 @@ void main() {
     });
 
     testWidgets(
-      'a volume change while released reopens first, then goes idle again',
+      'a volume change while released writes the DAC and leaves the stream closed',
       (tester) async {
         final f = await hardwareFixture();
         await f.pauseAt(const Duration(seconds: 42));
@@ -772,21 +748,15 @@ void main() {
 
         await f.player.setVolume(0.3);
 
-        expect(f.released, isFalse);
-        expect(
-          f.events.indexOf('prepareEngine'),
-          lessThan(f.events.indexOf('setVolume:0.3')),
-        );
+        expect(f.events, ['setVolume:0.3']);
+        expect(f.released, isTrue);
         expect(f.usb.volume, 0.3);
         expect(f.player.usbVolumeSafetyBlockedNotifier.value, isFalse);
-        // Still paused: the stream closes again after another quiet 30 s.
-        expect(f.player.isUsbIdleReleaseTimerArmed, isTrue);
-        f.player.audioOutputDiagnosticsNotifier.value = _diagnostics();
-        // The silently reopened engine has no source, so it is not "paused".
-        expect(f.rust.stateNotifier.value, RustPlaybackState.idle);
-        await tester.pump(const Duration(seconds: 31));
-        expect(f.released, isTrue);
-        expect(f.events.where((e) => e == 'releaseEngine'), hasLength(1));
+        expect(f.player.volumeTierNotifier.value, VolumeTier.hardware);
+        // Nothing woke the DAC, so there is no countdown to a second release.
+        expect(f.player.isUsbIdleReleaseTimerArmed, isFalse);
+        await tester.pump(const Duration(seconds: 61));
+        expect(f.events, ['setVolume:0.3']);
         await f.finish();
       },
     );
@@ -826,98 +796,89 @@ void main() {
       return f;
     }
 
-    testWidgets('the route keeps the DAC level, mute and writable control', (
-      tester,
-    ) async {
-      final f = _Fixture(hardware: true);
-      expect(await f.player.enableUsbDacBitPerfect(), isTrue);
-      f.usb.muted = true;
-      await f.player.reconcileVolumeForTesting();
-      await f.pauseAt(const Duration(seconds: 42));
-      await tester.pump(const Duration(seconds: 31));
-      expect(f.released, isTrue);
-      expect(f.usb.control, isFalse);
-
-      final status = f.usb.currentDeviceStatus;
-      expect(status.volumeMode, Uac2VolumeMode.hardware);
-      expect(status.volumeControlWritable, isTrue);
-      expect(status.volume, 0.4);
-      expect(status.muted, isTrue);
-      expect(f.usb.holdsReleasedStreamVolume, isTrue);
-
-      await f.player.resume();
-      expect(f.usb.holdsReleasedStreamVolume, isFalse);
-      f.player.isPlayingNotifier.value = true;
-      await f.finish();
-    });
-
-    testWidgets('a volume key press reopens the stream, then moves the DAC', (
+    testWidgets('a volume key press moves the DAC and leaves the stream closed', (
       tester,
     ) async {
       final f = await releasedFixture(tester);
-      // The keys stay with the DAC: native still has the stream's claim.
+      // The keys stay with the DAC: native still has the claim and the control.
       expect(f.player.dacVolumeKeysActive, isTrue);
 
       await f.player.stepDacVolumeFromKey(1);
 
-      expect(f.released, isFalse);
-      expect(
-        f.events,
-        containsAllInOrder(['prepareEngine', 'setVolume:0.4625']),
-      );
+      expect(f.events, ['setVolume:0.4625']);
+      expect(f.released, isTrue);
       expect(f.usb.volume, closeTo(0.4 + 1 / 16, 1e-9));
       expect(f.player.dacVolumeKeysActive, isTrue);
       expect(f.player.usbVolumeSafetyBlockedNotifier.value, isFalse);
+      expect(f.player.isUsbIdleReleaseTimerArmed, isFalse);
       await f.finish();
     });
 
     testWidgets(
-      'the media session volume reopens the stream, then moves the DAC',
+      'the media session volume moves the DAC and leaves the stream closed',
       (tester) async {
         final f = await releasedFixture(tester);
 
         await f.player.setDacVolumeFromSession(0.8);
 
-        expect(
-          f.events,
-          containsAllInOrder(['prepareEngine', 'setVolume:0.8']),
-        );
+        expect(f.events, ['setVolume:0.8']);
         expect(f.usb.volume, 0.8);
-        expect(f.released, isFalse);
+        expect(f.released, isTrue);
+        expect(f.player.isUsbIdleReleaseTimerArmed, isFalse);
         await f.finish();
       },
     );
 
-    testWidgets('mute reopens the stream, then mutes the DAC', (tester) async {
+    testWidgets('mute mutes the DAC and leaves the stream closed', (
+      tester,
+    ) async {
       final f = await releasedFixture(tester);
 
       expect(await f.player.setHardwareMute(true), isTrue);
 
-      expect(f.events, containsAllInOrder(['prepareEngine', 'setMute:true']));
+      expect(f.events, ['setMute:true']);
       expect(f.usb.muted, isTrue);
       expect(f.usb.volume, 0.4); // The level is independent of mute.
-      expect(f.released, isFalse);
+      expect(f.released, isTrue);
+      expect(f.player.isUsbIdleReleaseTimerArmed, isFalse);
       await f.finish();
     });
 
-    testWidgets('a control write counts the quiet time from its end', (
+    testWidgets('control writes while released never reopen or release again', (
       tester,
     ) async {
       final f = await releasedFixture(tester);
 
       await f.player.setHardwareMute(true);
-      f.reportDirectUsb();
-      expect(f.player.isUsbIdleReleaseTimerArmed, isTrue);
-      await tester.pump(const Duration(seconds: 29));
-      expect(f.released, isFalse);
-
-      // Another control write inside the window restarts the countdown.
+      await f.player.setVolume(0.5);
       await f.player.setHardwareMute(false);
-      f.reportDirectUsb();
-      await tester.pump(const Duration(seconds: 29));
+      await tester.pump(const Duration(seconds: 61));
+
+      expect(f.events, ['setMute:true', 'setVolume:0.5', 'setMute:false']);
+      expect(f.released, isTrue);
+      expect(f.player.isUsbIdleReleaseTimerArmed, isFalse);
+      await f.finish();
+    });
+
+    testWidgets('a control write before the release does not move it later', (
+      tester,
+    ) async {
+      final f = _Fixture(hardware: true);
+      expect(await f.player.enableUsbDacBitPerfect(), isTrue);
+      await f.player.reconcileVolumeForTesting();
+      await f.pauseAt(const Duration(seconds: 42));
+      await tester.pump(const Duration(seconds: 20));
+
+      await f.player.setHardwareMute(true);
+      await f.player.setVolume(0.5);
+      expect(f.player.isUsbIdleReleaseTimerArmed, isTrue);
+
+      // 30 s after the pause, not 30 s after the last write.
+      await tester.pump(const Duration(seconds: 9));
       expect(f.released, isFalse);
       await tester.pump(const Duration(seconds: 2));
       expect(f.released, isTrue);
+      expect(f.events.where((e) => e == 'releaseEngine'), hasLength(1));
       await f.finish();
     });
 
@@ -933,7 +894,6 @@ void main() {
         await f.player
             .reconcileVolumeForTesting(); // A route refresh in the gap.
         await f.player.stepDacVolumeFromKey(1);
-        f.reportDirectUsb();
         await tester.pump(const Duration(seconds: 31));
         expect(f.released, isTrue);
         await f.player.stepDacVolumeFromKey(-1);
@@ -962,11 +922,10 @@ void main() {
     testWidgets(
       'the idle release waits for a slow write and does not fail it',
       (tester) async {
-        final f = await releasedFixture(tester);
-        await f.player.setVolume(0.5); // Reopens; the countdown starts again.
-        f.reportDirectUsb();
-        expect(f.released, isFalse);
-        f.events.clear();
+        final f = _Fixture(hardware: true);
+        expect(await f.player.enableUsbDacBitPerfect(), isTrue);
+        await f.player.reconcileVolumeForTesting();
+        await f.pauseAt(const Duration(seconds: 42));
         f.usb.writeGate = Completer<void>();
 
         await tester.pump(const Duration(seconds: 25));
@@ -984,8 +943,8 @@ void main() {
         expect(f.player.usbVolumeSafetyBlockedNotifier.value, isFalse);
         expect(f.events, isNot(contains('pause')));
 
-        // Quiet for another 30 s: now it closes.
-        f.reportDirectUsb();
+        // The release that gave way is armed again and closes it when quiet.
+        expect(f.player.isUsbIdleReleaseTimerArmed, isTrue);
         await tester.pump(const Duration(seconds: 31));
         expect(f.released, isTrue);
         await f.finish();
@@ -1017,8 +976,20 @@ void main() {
       await f.finish();
     });
 
+    testWidgets('the DAC is not polled while the stream is released', (
+      tester,
+    ) async {
+      final f = await releasedFixture(tester);
+      final checks = f.usb.healthChecks;
+
+      await tester.pump(const Duration(seconds: 60));
+
+      expect(f.usb.healthChecks, checks);
+      await f.finish();
+    });
+
     testWidgets(
-      'a drag while released reopens once and ends on the newest level',
+      'a drag while released writes without reopening and ends on the newest level',
       (tester) async {
         final f = await releasedFixture(tester);
         f.usb.writeGate = Completer<void>();
@@ -1031,63 +1002,32 @@ void main() {
         f.usb.writeGate!.complete();
         await Future.wait(drag);
 
-        expect(f.events.where((e) => e == 'prepareEngine'), hasLength(1));
-        final writes = f.events
-            .where((e) => e.startsWith('setVolume'))
-            .toList();
-        expect(writes, [
+        expect(f.events, [
           'setVolume:0.45',
           'setVolume:0.6',
-        ]); // In order, newest last.
-        expect(
-          f.events.indexOf('prepareEngine'),
-          lessThan(f.events.indexOf(writes.first)),
-        );
+        ]); // In order, newest last, one at a time.
+        expect(f.released, isTrue);
         expect(f.usb.volume, 0.6);
         await f.finish();
       },
     );
 
     testWidgets(
-      'a write the DAC refuses after the reopen is a safety block like any other',
+      'a write the DAC refuses while released is a safety block like any other',
       (tester) async {
         final f = await releasedFixture(tester);
         f.usb.writeAccepted = false;
 
         await f.player.setVolume(0.7);
 
-        expect(
-          f.events,
-          containsAllInOrder(['prepareEngine', 'setVolume:0.7']),
-        );
+        expect(f.events, ['setVolume:0.7']);
         expect(f.player.usbVolumeSafetyBlockedNotifier.value, isTrue);
         expect(f.usb.volume, 0.4);
-        // The safety block keeps the stream open until a write is confirmed.
-        f.reportDirectUsb();
-        await tester.pump(const Duration(seconds: 31));
-        expect(f.events, isNot(contains('releaseEngine')));
-        expect(f.released, isFalse);
+        // There is no stream to pause; nothing was reopened to find out.
+        expect(f.released, isTrue);
+        expect(f.events, isNot(contains('pause')));
         await f.finish();
       },
     );
-
-    testWidgets('a stream that will not reopen leaves the DAC alone', (
-      tester,
-    ) async {
-      final f = await releasedFixture(tester);
-      f.rust.prepareFails = true;
-
-      await f.player.setVolume(0.7);
-      expect(await f.player.setHardwareMute(true), isFalse);
-      await f.player.stepDacVolumeFromKey(1);
-
-      expect(f.events.where((e) => e.startsWith('setVolume')), isEmpty);
-      expect(f.events.where((e) => e.startsWith('setMute')), isEmpty);
-      expect(f.released, isTrue);
-      expect(f.player.usbVolumeSafetyBlockedNotifier.value, isFalse);
-      expect(f.player.dacVolumeKeysActive, isTrue);
-      f.rust.prepareFails = false;
-      await f.finish();
-    });
   });
 }

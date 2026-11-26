@@ -63,8 +63,8 @@ class _TestPlayer extends Fake implements PlayerService {
   final writes = <double>[];
   bool acceptWrites = true;
 
-  /// Mute goes through the player, which reopens an idle-released stream first;
-  /// the test status stands in for the DAC.
+  /// Mute goes through the player, which holds the idle release off while the
+  /// write runs; the test status stands in for the DAC.
   Future<bool> Function(bool muted)? onMute;
 
   @override

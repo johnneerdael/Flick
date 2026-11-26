@@ -132,10 +132,11 @@ pub(crate) fn quantize_volume(volume: f64, ranges: &[VolumeRange]) -> i16 {
 }
 
 /// The level a DAC had before Flick first changed it during one attachment, and
-/// the control that writes it back. The live volume control is dropped with each
-/// stream, so the record keeps its own copy and survives stream restarts and idle
-/// releases. It ends when the level is handed back or forgotten, or is replaced
-/// by another DAC's.
+/// the control that writes it back. The live volume control is rediscovered with
+/// each stream and dropped when the registration is cleared, so the record keeps
+/// its own copy and survives stream restarts, idle releases and a release that
+/// Flick takes straight back. It ends when the level is handed back or forgotten,
+/// or is replaced by another DAC's.
 #[derive(Debug)]
 pub(crate) struct OriginalVolume<C> {
     pub(crate) device: String,
