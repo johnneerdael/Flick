@@ -3,7 +3,8 @@
 Reference for the USB Audio Class 2.0 engine in Flick Player.
 
 > **Status (partial deprecation):** UAC2 routing shifted to Android's native
-> USB DAC handling (see `rust/src/uac2/android_direct.rs`). The `pipeline-info`
+> USB DAC handling (see `rust/src/uac2/usbdac_adapter/`, which drives the
+> `usbdac-core` library that owns the isochronous transport). The `pipeline-info`
 > and `transfer-stats` widgets were removed. The Rust engine — device
 > discovery, descriptor parsing, isochronous transfers — remains the source of
 > truth for this document.
@@ -79,7 +80,7 @@ rust/src/uac2/
 ├── error_recovery.rs           # Recovery strategies
 ├── fallback_handler.rs         # Fallback to default audio
 ├── logging.rs                  # Logging configuration
-├── android_direct.rs           # Native Android USB DAC path (current)
+├── usbdac_adapter/             # Native Android USB DAC path (current): Flick's adapter over usbdac-core
 └── tests/
     ├── device_classifier_tests.rs
     ├── capabilities_tests.rs
@@ -724,26 +725,30 @@ fn score_network_dac(device: &DeviceCaps, track: &TrackInfo) -> Option<u8> {
 
 ### Adding a DSD Quirk
 
-For native DSD on a USB DAC that needs special byte ordering, add a `DsdQuirk` to `KNOWN_DSD_QUIRKS` in `rust/src/uac2/android_direct.rs`:
+Per-device behaviour of the direct USB path lives in `QUIRK_DATABASE`
+(`rust/src/uac2/quirk.rs`). `rust/src/uac2/usbdac_adapter/config.rs` hands the
+entries for the registered device to the `usbdac-core` library as
+`DacConfig::quirks`, on top of the quirks the library has built in. For native
+DSD on a USB DAC that needs special byte ordering, add an entry:
 
 ```rust
-DsdQuirk {
-    vendor_id: 0x1224,           // USB VID
-    product_id: 0x2A2A,          // USB PID
-    product_name_contains: None, // Or Some("DAC Name")
-    preferred_subslot: 2,        // Bytes per channel per USB frame
-    big_endian: true,            // Byte order for multi-byte payloads
-    bit_reverse: false,          // Per-byte bit reversal (LSB-first DSD DACs)
-}
+db.add(
+    0x1224,                      // USB VID
+    0x2A2A,                      // USB PID
+    "DAC Name",                  // product name contains ("" matches any name)
+    &[
+        UsbAudioQuirk::DsdSubslotSize(2), // Bytes per channel per USB frame
+        UsbAudioQuirk::DsdBigEndian,      // Byte order for multi-byte payloads
+        UsbAudioQuirk::DsdBitReverse,     // Per-byte bit reversal (LSB-first DSD DACs)
+    ],
+);
 ```
 
-- `vendor_id` / `product_id`: exact USB VID/PID match (0 for wildcard).
-- `product_name_contains`: substring match on USB product name (case-insensitive).
-- `preferred_subslot`: bytes per channel per USB transfer frame.
-- `big_endian`: when packing multi-byte interleaved channel data, send MSB first.
-- `bit_reverse`: invert bit order within each byte.
-
-The quirk applies during USB output loop initialization via `lookup_dsd_quirk()`, which feeds the `dsd_big_endian` flag into `prepare_iso_transfer_payload()` for native DSD payload packing.
+The quirks the transport acts on are `SkipClockValidation`,
+`IgnoreInvalidSampleRate`, `RequireVerifiedRate`, `SettleDelayMs`,
+`PreferPadded24BitTransport`, `DsdSubslotSize`, `DsdBigEndian` and
+`DsdBitReverse`. The Dart-side overrides for byte order and subslot take
+precedence over a quirk and reach the library through `Dac::set_dsd_overrides`.
 
 ### DAP Registry
 
@@ -795,7 +800,8 @@ The quirk applies during USB output loop initialization via `lookup_dsd_quirk()`
 | `rust/src/audio/engine.rs`                   | Engine creation per strategy, integer (I32) stream support, pipeline mode |
 | `rust/src/audio/verifier.rs`                 | Output verification                                                      |
 | `rust/src/audio/manager.rs`                  | Capability detection, engine lifecycle                                   |
-| `rust/src/uac2/android_direct.rs`            | USB isochronous transfers, DSD quirk table, native DSD payload packing   |
+| `rust/src/uac2/usbdac_adapter/`              | Flick's adapter over the `usbdac-core` library (isochronous transport, DSD packing and volume live there) |
+| `rust/src/uac2/quirk.rs`                     | Per-device quirk table, handed to the library                            |
 | `rust/src/audio/dsd_engine/output/mod.rs`    | DSD output routing, byte order normalization, global bit reverse override |
 | `lib/models/audio_engine_type.dart`          | Flutter engine type enum                                                 |
 | `lib/services/audio_session_manager.dart`    | Mode resolution logic                                                    |

@@ -49,7 +49,7 @@ UI slider → player_service.setVolume()
   → uac2_service.setVolume()            (platform channel)
   → Kotlin setRouteVolume()
   → nativeSetRustDirectUsbHardwareVolume()
-  → android_direct_set_hardware_volume()     (Rust)
+  → android_direct_set_hardware_volume()     (Rust, usbdac_adapter/volume.rs → usbdac-core VolumeControl)
   → open_transient_usb_handle(device_fd)     (separate libusb, no interface claim)
   → quantize_hardware_volume()               (f64 target → i16 raw)
   → write_feature_unit_i16_control()         (SET_CUR → DAC)
@@ -215,8 +215,8 @@ are also logged with that prefix.
 | `lib/services/uac2_service.dart` | Route-checked native writes/readback and queued restore |
 | `lib/services/usb_dac_volume_restore.dart` | Coalesced, generation-checked restore coordination |
 | `lib/core/utils/volume_curve.dart` | Rust-compatible dB labels and inverse-curve duck attenuation |
-| `rust/src/uac2/android_direct.rs` | Feature Unit discovery, verified SET_CUR/GET_CUR and startup restore |
-| `rust/src/uac2/volume_control.rs` | Raw dB range normalization and supported-step quantization |
+| `rust/src/uac2/usbdac_adapter/volume.rs` | Routes volume, mute, health check and restore to the library's `VolumeControl` and caches what the DAC last said |
+| `usbdac-core` (`volume_control.rs`, `transport/volume_hw.rs`) | Feature Unit discovery, verified SET_CUR/GET_CUR, raw dB range normalization and step quantization, the original level and its hand-back |
 | `rust/src/audio/engine.rs` | Software volume-to-gain curve and raw/passthrough guards |
 
 ## Design History

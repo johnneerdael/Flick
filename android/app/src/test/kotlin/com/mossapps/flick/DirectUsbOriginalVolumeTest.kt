@@ -34,7 +34,7 @@ class DirectUsbOriginalVolumeTest {
 
     @Test
     fun theNativeCodesMatchTheRustConstants() {
-        // rust/src/uac2/android_direct.rs: ORIGINAL_VOLUME_KEEP / RESTORE / FORGET.
+        // rust/src/uac2/usbdac_adapter/state.rs: ORIGINAL_VOLUME_KEEP / RESTORE / FORGET.
         assertEquals(0, OriginalVolumeAction.KEEP.code)
         assertEquals(1, OriginalVolumeAction.RESTORE.code)
         assertEquals(2, OriginalVolumeAction.FORGET.code)

@@ -112,7 +112,7 @@ Output mode selected via `DsdOutputRouter::new(mode, dsd_rate, target, channels,
 A global `DSD_BIT_REVERSE_OVERRIDE` atomic (exposed via `set_dsd_bit_reverse_override(bool)`) forces/inverts reversal — for DACs expecting the opposite bit order.
 
 ### DSD Quirks Table
-Device-specific quirks for USB native DSD, in `KNOWN_DSD_QUIRKS` (`rust/src/uac2/android_direct.rs`). Each `DsdQuirk`:
+Device-specific quirks for USB native DSD, in `QUIRK_DATABASE` (`rust/src/uac2/quirk.rs`), which the adapter hands to the `usbdac-core` library. The DSD ones are `DsdSubslotSize`, `DsdBigEndian` and `DsdBitReverse`; the fields below describe what they mean:
 
 | Field | Description |
 |-------|-------------|
@@ -312,8 +312,7 @@ Always `PipelineMode::Dsp`. DoP not supported — f32 samples play as literal PC
 ### Android USB Direct (UAC2)
 - DoP format negotiation via UAC2 descriptors; `AndroidDirectUsbPlaybackFormat.is_dop` flag
 - `AndroidDirectUsbPlaybackFormat.dsd_bit_rate` for native DSD wire rate
-- DoP encoding: `encode_dop_slots()` (`uac2/android_direct.rs`)
-- Native DSD encoding: `encode_usb_pcm_slots()` with `dsd_big_endian` flag and `channels`
+- DoP encoding and native DSD encoding happen in the `usbdac-core` library (`transport/encode.rs`); Flick's render thread (`uac2/usbdac_adapter/render.rs`) hands it the engine's words and bytes as `i32` ring samples
 - Multi-byte interleaved payload packing: `subslot_size=1` for direct byte copy, `>1` for interleaved multi-byte per channel with configurable endianness
 - Pipeline mode: `Passthrough` (bit-perfect verified PCM), `Dop` (DoP + native DSD)
 - Device classifier checks `FORMAT_TAG_DSD = 0x0008` and `FormatType::Dsd`
