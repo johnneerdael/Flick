@@ -52,6 +52,10 @@ pub(crate) struct UrbLoss {
     pub lost_frames: u64,
     pub short_packets: u64,
     pub zero_packets: u64,
+    /// The URB carried only held wire silence (pause, or the wait for a flushed
+    /// ring to refill). Frames the DAC did not take from it are a transport
+    /// problem but not lost audio: no music was queued in them.
+    pub held: bool,
 }
 
 impl UrbLoss {
@@ -67,12 +71,21 @@ impl UrbLoss {
             lost_frames: stats.lost_ring_frames(ring_bytes_per_frame),
             short_packets: stats.short_packets as u64,
             zero_packets: stats.zero_packets as u64,
+            held: false,
         }
+    }
+
+    /// Mark the URB as having carried held silence rather than audio.
+    pub(crate) fn with_held(mut self, held: bool) -> Self {
+        self.held = held;
+        self
     }
 
     /// A URB is lossy if it timed out or failed to deliver any of its frames.
     /// Short packets alone are not loss: a swap of the two legal packet sizes
-    /// inside one URB delivers every byte.
+    /// inside one URB delivers every byte. A held-silence URB is lossy too: the
+    /// consecutive bound is about the transport still consuming, and that holds
+    /// whatever the URB carried.
     pub(crate) fn is_lossy(&self) -> bool {
         self.timed_out || self.lost_frames > 0
     }
@@ -104,8 +117,8 @@ impl fmt::Display for LossLimit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct UrbVerdict {
     pub lossy: bool,
-    /// Ring frames the DAC actually took from this URB. Lost frames are never
-    /// included.
+    /// Ring frames the DAC actually took from this URB, held silence included.
+    /// Lost frames are never included.
     pub consumed_frames: u64,
     /// This URB is the first to lose frames on the stream.
     pub newly_latched: bool,
@@ -126,6 +139,7 @@ pub(crate) struct LossTracker {
     limits: LossLimits,
     consecutive_lossy_urbs: u32,
     lost_frames: u64,
+    held_lost_frames: u64,
     short_packets: u64,
     zero_packets: u64,
     data_urb_timeouts: u64,
@@ -138,6 +152,7 @@ impl LossTracker {
             limits,
             consecutive_lossy_urbs: 0,
             lost_frames: 0,
+            held_lost_frames: 0,
             short_packets: 0,
             zero_packets: 0,
             data_urb_timeouts: 0,
@@ -157,11 +172,18 @@ impl LossTracker {
             self.data_urb_timeouts = self.data_urb_timeouts.saturating_add(1);
         }
 
+        // Only music can be lost audio. Silence the DAC did not take while the
+        // stream was held neither latches the bit-perfect claim nor spends the
+        // lost-audio budget; it is kept apart for diagnosis.
         let mut newly_latched = false;
         if urb.lost_frames > 0 {
-            newly_latched = !self.latched;
-            self.latched = true;
-            self.lost_frames = self.lost_frames.saturating_add(urb.lost_frames);
+            if urb.held {
+                self.held_lost_frames = self.held_lost_frames.saturating_add(urb.lost_frames);
+            } else {
+                newly_latched = !self.latched;
+                self.latched = true;
+                self.lost_frames = self.lost_frames.saturating_add(urb.lost_frames);
+            }
         }
 
         let lossy = urb.is_lossy();
@@ -203,8 +225,14 @@ impl LossTracker {
         self.consecutive_lossy_urbs
     }
 
+    /// Ring frames of audio lost. Never includes held silence.
     pub(crate) fn lost_frames(&self) -> u64 {
         self.lost_frames
+    }
+
+    /// Ring frames of held silence the DAC did not take. Not lost audio.
+    pub(crate) fn held_lost_frames(&self) -> u64 {
+        self.held_lost_frames
     }
 
     pub(crate) fn short_packets(&self) -> u64 {
