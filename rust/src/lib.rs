@@ -164,9 +164,9 @@ fn init_rust_android_context<'local>(mut env: JNIEnv<'local>, context: JObject<'
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeRegisterRustDirectUsbDevice(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeRegisterRustDirectUsbDevice(
     mut env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     fd: jint,
     vendor_id: jint,
     product_id: jint,
@@ -230,9 +230,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeRegisterRustDi
 
 #[cfg(all(target_os = "android", not(feature = "uac2")))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeRegisterRustDirectUsbDevice(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeRegisterRustDirectUsbDevice(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     _fd: jint,
     _vendor_id: jint,
     _product_id: jint,
@@ -245,9 +245,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeRegisterRustDi
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectUsbPlaybackFormat(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeSetRustDirectUsbPlaybackFormat(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     sample_rate: jint,
     bit_depth: jint,
     channels: jint,
@@ -288,9 +288,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectU
 
 #[cfg(all(target_os = "android", not(feature = "uac2")))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectUsbPlaybackFormat(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeSetRustDirectUsbPlaybackFormat(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     _sample_rate: jint,
     _bit_depth: jint,
     _channels: jint,
@@ -302,9 +302,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectU
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectUsbLockEnabled(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeSetRustDirectUsbLockEnabled(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     enabled: jboolean,
 ) -> jboolean {
     match crate::uac2::set_android_usb_lock_enabled(enabled) {
@@ -318,9 +318,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectU
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeHasRustDirectUsbHardwareVolume(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeHasRustDirectUsbHardwareVolume(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
 ) -> jboolean {
     if crate::uac2::android_direct_has_hardware_volume_control() {
         true
@@ -331,36 +331,36 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeHasRustDirectU
 
 #[cfg(all(target_os = "android", not(feature = "uac2")))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeHasRustDirectUsbHardwareVolume(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeHasRustDirectUsbHardwareVolume(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
 ) -> jboolean {
     false
 }
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeGetRustDirectUsbHardwareVolume(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeGetRustDirectUsbHardwareVolume(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
 ) -> jdouble {
     crate::uac2::android_direct_cached_hardware_volume().unwrap_or(f64::NAN)
 }
 
 #[cfg(all(target_os = "android", not(feature = "uac2")))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeGetRustDirectUsbHardwareVolume(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeGetRustDirectUsbHardwareVolume(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
 ) -> jdouble {
     f64::NAN
 }
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectUsbHardwareVolume(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeSetRustDirectUsbHardwareVolume(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     volume: jdouble,
 ) -> jboolean {
     match crate::uac2::android_direct_set_hardware_volume(volume) {
@@ -377,9 +377,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectU
 
 #[cfg(all(target_os = "android", not(feature = "uac2")))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectUsbHardwareVolume(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeSetRustDirectUsbHardwareVolume(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     _volume: jdouble,
 ) -> jboolean {
     false
@@ -387,9 +387,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectU
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeQueueRustDirectUsbHardwareVolumeRestore(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeQueueRustDirectUsbHardwareVolumeRestore(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     volume: jdouble,
 ) -> jboolean {
     match crate::uac2::android_direct_queue_hardware_volume_restore(volume) {
@@ -406,9 +406,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeQueueRustDirec
 
 #[cfg(all(target_os = "android", not(feature = "uac2")))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeQueueRustDirectUsbHardwareVolumeRestore(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeQueueRustDirectUsbHardwareVolumeRestore(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     _volume: jdouble,
 ) -> jboolean {
     false
@@ -416,9 +416,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeQueueRustDirec
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeGetRustDirectUsbHardwareMute(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeGetRustDirectUsbHardwareMute(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
 ) -> jint {
     match crate::uac2::android_direct_cached_hardware_mute() {
         Some(true) => 1,
@@ -429,18 +429,18 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeGetRustDirectU
 
 #[cfg(all(target_os = "android", not(feature = "uac2")))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeGetRustDirectUsbHardwareMute(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeGetRustDirectUsbHardwareMute(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
 ) -> jint {
     -1
 }
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectUsbHardwareMute(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeSetRustDirectUsbHardwareMute(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     muted: jboolean,
 ) -> jboolean {
     match crate::uac2::android_direct_set_hardware_mute(muted) {
@@ -454,9 +454,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectU
 
 #[cfg(all(target_os = "android", not(feature = "uac2")))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectUsbHardwareMute(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeSetRustDirectUsbHardwareMute(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     _muted: jboolean,
 ) -> jboolean {
     false
@@ -464,9 +464,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectU
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeVerifyRustDirectUsbHardwareVolumeHealth(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeVerifyRustDirectUsbHardwareVolumeHealth(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
 ) -> jint {
     match crate::uac2::android_direct_verify_hardware_volume_health() {
         Ok(true) => 1,
@@ -480,18 +480,18 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeVerifyRustDire
 
 #[cfg(all(target_os = "android", not(feature = "uac2")))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeVerifyRustDirectUsbHardwareVolumeHealth(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeVerifyRustDirectUsbHardwareVolumeHealth(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
 ) -> jint {
     -1
 }
 
 #[cfg(all(target_os = "android", not(feature = "uac2")))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectUsbLockEnabled(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeSetRustDirectUsbLockEnabled(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     _enabled: jboolean,
 ) -> jboolean {
     false
@@ -499,9 +499,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectU
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeGetRustAudioDebugStateJson(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeGetRustAudioDebugStateJson(
     mut env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
 ) -> jstring {
     let engine_state = crate::api::audio_api::audio_get_runtime_debug_json_state();
     let direct_usb_state = crate::uac2::android_direct_debug_state();
@@ -524,9 +524,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeGetRustAudioDe
 
 #[cfg(all(target_os = "android", not(feature = "uac2")))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeGetRustAudioDebugStateJson(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeGetRustAudioDebugStateJson(
     mut env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
 ) -> jstring {
     let payload = serde_json::json!({
         "engine": crate::api::audio_api::audio_get_runtime_debug_json_state(),
@@ -551,9 +551,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeGetRustAudioDe
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectUsbOriginalVolumeAction(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeSetRustDirectUsbOriginalVolumeAction(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     action: jint,
 ) -> jboolean {
     u32::try_from(action).is_ok_and(crate::uac2::set_android_usb_original_volume_action)
@@ -561,9 +561,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectU
 
 #[cfg(all(target_os = "android", not(feature = "uac2")))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectUsbOriginalVolumeAction(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeSetRustDirectUsbOriginalVolumeAction(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     _action: jint,
 ) -> jboolean {
     false
@@ -571,9 +571,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectU
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeClearRustDirectUsbPlayback(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeClearRustDirectUsbPlayback(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
 ) -> jboolean {
     crate::uac2::clear_android_usb_device();
     true
@@ -581,9 +581,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeClearRustDirec
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeWaitRustDirectUsbSessionStopped(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeWaitRustDirectUsbSessionStopped(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     timeout_ms: jint,
 ) -> jboolean {
     crate::uac2::wait_for_android_usb_session_stop(std::time::Duration::from_millis(
@@ -593,9 +593,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeWaitRustDirect
 
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectUsbReconnectTarget(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeSetRustDirectUsbReconnectTarget(
     mut env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     device_name: JString<'_>,
     cancel: jboolean,
 ) -> jboolean {
@@ -621,18 +621,18 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectU
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeIsRustDirectUsbSessionActive(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeIsRustDirectUsbSessionActive(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
 ) -> jboolean {
     crate::uac2::is_usb_session_active() as jboolean
 }
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeMarkRustDirectUsbFallback(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeMarkRustDirectUsbFallback(
     mut env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     reason: JString<'_>,
 ) -> jboolean {
     let reason = if jni::refs::Reference::is_null(&reason) {
@@ -649,9 +649,9 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeMarkRustDirect
 
 #[cfg(all(target_os = "android", not(feature = "uac2")))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeMarkRustDirectUsbFallback(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeMarkRustDirectUsbFallback(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     _reason: JString<'_>,
 ) -> jboolean {
     false
@@ -659,18 +659,18 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeMarkRustDirect
 
 #[cfg(all(target_os = "android", not(feature = "uac2")))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeClearRustDirectUsbPlayback(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeClearRustDirectUsbPlayback(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
 ) -> jboolean {
     false
 }
 
 #[cfg(all(target_os = "android", not(feature = "uac2")))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeWaitRustDirectUsbSessionStopped(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeWaitRustDirectUsbSessionStopped(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     _timeout_ms: jint,
 ) -> jboolean {
     true
@@ -678,18 +678,18 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeWaitRustDirect
 
 #[cfg(all(target_os = "android", not(feature = "uac2")))]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeIsRustDirectUsbSessionActive(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeIsRustDirectUsbSessionActive(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
 ) -> jboolean {
     false
 }
 
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDeveloperMode(
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeSetRustDeveloperMode(
     _env: JNIEnv<'_>,
-    _activity: JObject<'_>,
+    _controller: JObject<'_>,
     enabled: jboolean,
 ) {
     DEVELOPER_MODE.store(enabled, Ordering::Relaxed);

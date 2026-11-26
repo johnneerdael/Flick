@@ -18,7 +18,8 @@ import java.lang.ref.WeakReference
  *
  * Only handlers that need a [Context] and no activity live here. Everything
  * that needs the activity stays in MainActivity.configureFlutterEngine and has
- * no handler until the user opens the app.
+ * no handler until the user opens the app. Direct USB is one of the former: its
+ * [DirectUsbController] is created here and outlives every activity.
  *
  * Main thread only.
  */
@@ -55,6 +56,16 @@ object FlickEngine {
         }
     }
     private var playerChannel: MethodChannel? = null
+    private var directUsbController: DirectUsbController? = null
+
+    /**
+     * The direct USB DAC owner, one per process. Holds the application context
+     * only, so the activity can come and go without taking it with it.
+     */
+    fun directUsb(context: Context): DirectUsbController = synchronized(lock) {
+        directUsbController
+            ?: DirectUsbController(context.applicationContext).also { directUsbController = it }
+    }
 
     /**
      * Dart says the DAC owns the phone's volume keys (direct USB, DAC hardware
@@ -108,6 +119,7 @@ object FlickEngine {
             GeneratedPluginRegistrant.registerWith(engine)
             engine.plugins.add(FlickVisualizerPlugin())
             registerPlayerChannel(context.applicationContext, engine)
+            directUsb(context).attach(engine)
             CarChannel.attach(engine)
             preparedEngine = WeakReference(engine)
         }

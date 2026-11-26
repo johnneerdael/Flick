@@ -212,6 +212,14 @@ the phone's volume keys; `MainActivity.dispatchKeyEvent` reads that flag, so it 
 be set) and the new `…/car` channel. Everything that needs an activity stays where it is; in a headless start
 those channels have no handler until the user opens the app.
 
+Direct USB moves out of `MainActivity` too. `DirectUsbController` (its own file, owned by `FlickEngine`,
+holding only the application context) serves the `…/uac2` and `…/audio_device` channels and owns the
+USB hot-plug receiver, the volume observer and the audio-device callback, none of which an activity
+tears down. Only the permission prompt needs a screen: `MainActivity` tells the controller when it
+exists, and with none a USB permission that is not already held is never requested (the dialog would
+appear on a locked phone). `requestPermission` then answers `PERMISSION_DENIED`, which Dart already
+treats as not granted, so playback falls back to Android's output exactly as a denial does today.
+
 Dart changes for a headless start:
 
 - `ExternalPlaybackService.initialize` must also survive `MissingPluginException` (today it aborts
