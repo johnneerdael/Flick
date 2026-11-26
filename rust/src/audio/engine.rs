@@ -593,6 +593,16 @@ impl AudioCallbackData {
         )
     }
 
+    /// True when no source is current: the engine is rendering silence because
+    /// there is nothing to play, not because a source is starved. A busy sources
+    /// lock reads as "not idle", so a caller never drops audio on a guess.
+    pub(crate) fn is_idle(&self) -> bool {
+        self.sources
+            .try_lock()
+            .map(|sources| sources.current().is_none())
+            .unwrap_or(false)
+    }
+
     /// Publish the current source's UI progress through the lock-free snapshot.
     /// Callers must hold the `sources` lock so the source cannot be replaced
     /// between selection and publication.
@@ -4700,17 +4710,22 @@ fn command_processing_loop(
                         let _ = completed.try_send(());
                     }
                     AudioCommand::Stop { completed } => {
+                        let had_live_source;
                         {
                             let mut sources = callback_data.sources.lock();
+                            had_live_source = sources.current().is_some();
                             sources.stop();
                             callback_data.clear_progress_snapshot();
                         }
                         callback_data.crossfader.lock().reset();
                         callback_data.pitch_shifter.lock().reset();
                         callback_data.crossfade_active.store(false, Ordering::Relaxed);
-                        // Output held back by a pause belongs to the stopped
-                        // source; it must not play once something resumes.
-                        if callback_data.is_paused() {
+                        // Stopping a track that had not ended is a user action:
+                        // it must be silent now, not after the output queue has
+                        // played out. Output held back by a pause belongs to the
+                        // stopped source too. A track that already ended has no
+                        // live source, and its queued tail plays out.
+                        if had_live_source || callback_data.is_paused() {
                             callback_data.request_output_flush();
                         }
                         state.store(PlaybackState::Stopped as u8, Ordering::Relaxed);
@@ -5070,8 +5085,13 @@ fn handle_play(
     // respawned from the beginning after the new current source is installed.
     let mut invalidated_successor: Option<(SourceInfo, f32)> = None;
     let repeat_one = callback_data.is_repeat_one();
+    let replaced_live_source;
     {
         let mut sources = callback_data.sources.lock();
+        // A user choosing another track while one plays has to be heard now. A
+        // track that already ended has no current source: what is still queued
+        // in the output is its natural tail and must play out.
+        replaced_live_source = sources.current().is_some();
         if replay_keeps_successor(&sources, &path, PlaybackRange::default()) {
             if repeat_one {
                 // Repeat One replay must start the same track from the top,
@@ -5104,7 +5124,15 @@ fn handle_play(
     match spawn_decoder(path.clone(), sample_rate, callback_data.channels(), None, callback_data) {
         Ok((source, handle)) => {
             source.set_replaygain_db(callback_data.get_replaygain_db());
-            start_playback_source(source, handle, callback_data, state, decoders, event_tx);
+            start_playback_source(
+                source,
+                handle,
+                callback_data,
+                state,
+                decoders,
+                event_tx,
+                replaced_live_source,
+            );
             if let Some((info, replaygain_db)) = invalidated_successor {
                 requeue_successor_from_info(
                     info,
@@ -5140,9 +5168,12 @@ fn handle_play_prepared(
 
     let mut invalidated_successor: Option<(SourceInfo, f32)> = None;
     let repeat_one = callback_data.is_repeat_one();
+    let replaced_live_source;
     {
         let path = source.info.path.clone();
         let mut sources = callback_data.sources.lock();
+        // See `handle_play`: only replacing a live source flushes the output.
+        replaced_live_source = sources.current().is_some();
         if replay_keeps_successor(&sources, &path, source.info.range) {
             if repeat_one {
                 log::info!("[repeat-one] replay of current track: clearing queued successor");
@@ -5177,6 +5208,7 @@ fn handle_play_prepared(
         state,
         decoders,
         event_tx,
+        replaced_live_source,
     );
 
     if let Some((info, replaygain_db)) = invalidated_successor {
@@ -5262,6 +5294,13 @@ fn handle_queue_next_prepared(
     queue_playback_source(source, decoder_handle, callback_data, decoders);
 }
 
+/// Install `source` as the current track.
+///
+/// `replaced_live_source` is true when a track that had not ended was playing
+/// (or paused) and this replaces it: that is a user action, so audio already
+/// queued in the output for the old track is dropped. When the previous track
+/// ended on its own there is nothing live to replace and its queued tail plays
+/// out, exactly as for a gapless handoff.
 fn start_playback_source(
     mut source: AudioSource,
     decoder_handle: DecoderHandle,
@@ -5269,6 +5308,7 @@ fn start_playback_source(
     state: &Arc<AtomicU8>,
     decoders: &Arc<Mutex<Vec<DecoderHandle>>>,
     event_tx: &Sender<AudioEvent>,
+    replaced_live_source: bool,
 ) {
     source.set_ready();
     source.set_playing();
@@ -5277,10 +5317,14 @@ fn start_playback_source(
         let mut sources = callback_data.sources.lock();
         sources.set_current(source);
         callback_data.publish_progress_snapshot(&sources);
-    }
-    // Output held back by a pause belongs to the previous source.
-    if callback_data.is_paused() {
-        callback_data.request_output_flush();
+        // Output held back by a pause belongs to the previous source, and so
+        // does whatever a replaced live source had queued. The request is made
+        // while the sources lock is still held: the render thread cannot render
+        // the new source before the request is visible, so what it flushes is
+        // never the new track's first audio.
+        if replaced_live_source || callback_data.is_paused() {
+            callback_data.request_output_flush();
+        }
     }
     callback_data.set_paused(false);
     decoders.lock().push(decoder_handle);
@@ -5589,8 +5633,11 @@ fn handle_skip_to_next(
     };
 
     if !started {
-        // Immediate transition
+        // Immediate transition. The user asked for the next track now, so what
+        // the output still has queued for the old one is dropped (the lock is
+        // held, so the new source is not rendered before the request is seen).
         sources.advance_to_next();
+        callback_data.request_output_flush();
         state.store(PlaybackState::Playing as u8, Ordering::Relaxed);
     }
 }
@@ -6746,97 +6793,248 @@ mod tests {
     }
 
     #[test]
-    fn output_flush_is_requested_only_for_audio_a_seek_or_pause_made_stale() {
-        let (path, unused_path) = seek_test_fixtures("output_flush");
-        let (data, finished_rx) = build_callback_data_with_finished(48_000, 2);
-        let data = Arc::new(data);
-        let thread_data = data.clone();
-        let (command_tx, command_rx) = bounded(8);
-        let (event_tx, _event_rx) = bounded(64);
-        let state = Arc::new(AtomicU8::new(PlaybackState::Idle as u8));
-        let thread = std::thread::spawn(move || {
-            command_processing_loop(
-                command_rx,
-                finished_rx,
-                event_tx,
-                thread_data,
-                state,
-                Arc::new(Mutex::new(Vec::new())),
-                48_000,
-                Arc::new(AtomicBool::new(false)),
-                None,
-            );
-        });
-        let timeout = std::time::Duration::from_secs(2);
-        // Commands run in order, so a completed Pause/Resume proves every
-        // earlier command has been handled.
-        let pause = || {
-            let (completed, completion) = bounded(1);
-            command_tx.send(AudioCommand::Pause { completed }).unwrap();
-            completion.recv_timeout(timeout).unwrap();
-        };
-        let resume = || {
-            let (completed, completion) = bounded(1);
-            command_tx.send(AudioCommand::Resume { completed }).unwrap();
-            completion.recv_timeout(timeout).unwrap();
-        };
-        let stop = || {
-            let (completed, completion) = bounded(1);
-            command_tx.send(AudioCommand::Stop { completed }).unwrap();
-            completion.recv_timeout(timeout).unwrap();
-        };
+    fn the_output_is_idle_only_when_no_source_is_current() {
+        let data = build_callback_data(48_000, 2);
+        assert!(data.is_idle(), "nothing loaded");
 
-        command_tx
-            .send(AudioCommand::Play { path: path.clone() })
-            .unwrap();
-        pause();
+        data.sources
+            .lock()
+            .set_current(build_source(&[0.1; 100], 48_000, 2));
+        assert!(!data.is_idle(), "a current source is not idle, even when starved");
+
+        // A busy lock is not proof of anything: report "not idle" so the caller
+        // keeps queueing rather than dropping audio on a guess.
+        data.sources.lock().stop();
+        let held = data.sources.lock();
+        assert!(!data.is_idle());
+        drop(held);
+        assert!(data.is_idle());
+    }
+
+    /// A command loop on its own thread, with helpers that wait for a command to
+    /// have been handled. Commands run in order, so an acknowledged Resume
+    /// proves every earlier command is done.
+    struct FlushHarness {
+        data: Arc<AudioCallbackData>,
+        command_tx: Sender<AudioCommand>,
+        thread: Option<std::thread::JoinHandle<()>>,
+        paths: Vec<PathBuf>,
+    }
+
+    impl FlushHarness {
+        fn new(tag: &str) -> (Self, PathBuf, PathBuf) {
+            let (path, other) = seek_test_fixtures(tag);
+            let (data, finished_rx) = build_callback_data_with_finished(48_000, 2);
+            let data = Arc::new(data);
+            let thread_data = data.clone();
+            let (command_tx, command_rx) = bounded(16);
+            let (event_tx, _event_rx) = bounded(256);
+            let state = Arc::new(AtomicU8::new(PlaybackState::Idle as u8));
+            let thread = std::thread::spawn(move || {
+                command_processing_loop(
+                    command_rx,
+                    finished_rx,
+                    event_tx,
+                    thread_data,
+                    state,
+                    Arc::new(Mutex::new(Vec::new())),
+                    48_000,
+                    Arc::new(AtomicBool::new(false)),
+                    None,
+                );
+            });
+            let harness = Self {
+                data,
+                command_tx,
+                thread: Some(thread),
+                paths: vec![path.clone(), other.clone()],
+            };
+            (harness, path, other)
+        }
+
+        fn send(&self, command: AudioCommand) {
+            self.command_tx.send(command).unwrap();
+        }
+
+        fn ack(&self, command: impl FnOnce(Sender<()>) -> AudioCommand) {
+            let (completed, completion) = bounded(1);
+            self.send(command(completed));
+            completion
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        }
+
+        fn pause(&self) {
+            self.ack(|completed| AudioCommand::Pause { completed });
+        }
+
+        fn resume(&self) {
+            self.ack(|completed| AudioCommand::Resume { completed });
+        }
+
+        fn stop(&self) {
+            self.ack(|completed| AudioCommand::Stop { completed });
+        }
+
+        fn flushes(&self) -> u64 {
+            self.data.output_flush_generation()
+        }
+    }
+
+    impl Drop for FlushHarness {
+        fn drop(&mut self) {
+            let _ = self.command_tx.send(AudioCommand::Shutdown);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+            for path in &self.paths {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+
+    #[test]
+    fn output_flush_follows_a_seek_and_a_pause_that_made_queued_audio_stale() {
+        let (h, path, _other) = FlushHarness::new("output_flush");
+
+        h.send(AudioCommand::Play { path: path.clone() });
+        h.pause();
         assert_eq!(
-            data.output_flush_generation(),
+            h.flushes(),
             0,
             "playing a track and pausing it keeps the queued audio for resume"
         );
 
-        command_tx
-            .send(AudioCommand::Seek { position_secs: 0.1 })
-            .unwrap();
-        pause();
-        assert_eq!(data.output_flush_generation(), 1, "seek drops queued audio");
-        assert!(data.is_paused(), "a paused seek stays paused");
+        h.send(AudioCommand::Seek { position_secs: 0.1 });
+        h.pause();
+        assert_eq!(h.flushes(), 1, "seek drops queued audio");
+        assert!(h.data.is_paused(), "a paused seek stays paused");
 
-        stop();
+        h.stop();
         assert_eq!(
-            data.output_flush_generation(),
+            h.flushes(),
             2,
             "stopping while paused drops the audio held by the pause"
         );
 
-        command_tx
-            .send(AudioCommand::Play { path: path.clone() })
-            .unwrap();
-        resume();
+        h.send(AudioCommand::Play { path: path.clone() });
+        h.resume();
         assert_eq!(
-            data.output_flush_generation(),
+            h.flushes(),
             3,
             "a new source replacing a paused one drops the held audio"
         );
-        assert!(!data.is_paused());
+        assert!(!h.data.is_paused());
+    }
 
-        stop();
-        assert_eq!(
-            data.output_flush_generation(),
-            3,
-            "stopping while playing leaves the final tail to finish"
-        );
-        command_tx
-            .send(AudioCommand::Play { path: path.clone() })
+    #[test]
+    fn output_flush_follows_user_actions_that_replace_what_is_audible() {
+        let (h, path, other) = FlushHarness::new("output_flush_user");
+
+        h.send(AudioCommand::Play { path: path.clone() });
+        h.resume();
+        assert_eq!(h.flushes(), 0, "nothing was playing, so nothing is stale");
+
+        // A user choosing another track while one plays hears it now.
+        h.send(AudioCommand::Play { path: other.clone() });
+        h.resume();
+        assert_eq!(h.flushes(), 1, "play of another track while playing");
+
+        // So does a prepared replacement.
+        let (source, decoder_handle) =
+            spawn_decoder(path.clone(), 48_000, 2, None, &h.data).unwrap();
+        let (completed, completion) = bounded(1);
+        h.send(AudioCommand::PlayPrepared {
+            source,
+            decoder_handle,
+            completed,
+        });
+        completion
+            .recv_timeout(std::time::Duration::from_secs(5))
             .unwrap();
-        pause();
-        assert_eq!(data.output_flush_generation(), 3);
+        assert_eq!(h.flushes(), 2, "prepared play while playing");
 
-        command_tx.send(AudioCommand::Shutdown).unwrap();
-        thread.join().unwrap();
-        let _ = std::fs::remove_file(path);
-        let _ = std::fs::remove_file(unused_path);
+        // Restarting the track that is playing is a replacement too.
+        h.send(AudioCommand::Play { path: path.clone() });
+        h.resume();
+        assert_eq!(h.flushes(), 3, "restart of the current track");
+
+        // Stopping a track that has not ended silences it now.
+        h.stop();
+        assert_eq!(h.flushes(), 4, "stop while playing");
+
+        // Starting from a stop has nothing queued to replace.
+        h.send(AudioCommand::Play { path: path.clone() });
+        h.resume();
+        assert_eq!(h.flushes(), 4, "play after a stop");
+    }
+
+    #[test]
+    fn output_flush_leaves_the_tail_of_a_track_that_ended_on_its_own() {
+        let (h, path, other) = FlushHarness::new("output_flush_ended");
+        h.send(AudioCommand::Play { path: path.clone() });
+        h.resume();
+        assert_eq!(h.flushes(), 0);
+
+        // The track ends with nothing queued: the engine is left with no
+        // current source, and the end of the track is still queued in the output.
+        h.data.sources.lock().stop();
+
+        // Stop, and a play of the next track, arrive after the natural end.
+        h.stop();
+        assert_eq!(h.flushes(), 0, "stop after the track ended");
+        h.send(AudioCommand::Play { path: other.clone() });
+        h.resume();
+        assert_eq!(h.flushes(), 0, "play after the track ended");
+
+        h.data.sources.lock().stop();
+        let (source, decoder_handle) =
+            spawn_decoder(path.clone(), 48_000, 2, None, &h.data).unwrap();
+        let (completed, completion) = bounded(1);
+        h.send(AudioCommand::PlayPrepared {
+            source,
+            decoder_handle,
+            completed,
+        });
+        completion
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(h.flushes(), 0, "prepared play after the track ended");
+    }
+
+    #[test]
+    fn output_flush_follows_a_hard_skip_but_not_a_crossfade() {
+        let (h, path, other) = FlushHarness::new("output_flush_skip");
+        h.send(AudioCommand::Play { path: path.clone() });
+        h.send(AudioCommand::QueueNext { path: other.clone() });
+        h.resume();
+        assert_eq!(h.flushes(), 0);
+
+        // Crossfade is off: the skip cuts to the next track, and what was
+        // queued for the old one goes with it.
+        h.send(AudioCommand::SkipToNext);
+        h.resume();
+        assert_eq!(h.flushes(), 1, "hard skip while playing");
+        assert_eq!(h.data.sources.lock().current().unwrap().info.path, other);
+
+        // With a crossfade the old track is still being faded out: continuity,
+        // not a cut, so nothing is dropped.
+        h.send(AudioCommand::SetCrossfade {
+            enabled: true,
+            duration_secs: 0.4,
+        });
+        h.send(AudioCommand::QueueNext { path: path.clone() });
+        h.send(AudioCommand::SkipToNext);
+        h.resume();
+        assert!(h.data.crossfade_active.load(Ordering::Relaxed));
+        assert_eq!(h.flushes(), 1, "a manual crossfade does not flush");
+
+        // No successor: skipping does nothing, so nothing is flushed.
+        h.stop();
+        let before = h.flushes();
+        h.send(AudioCommand::SkipToNext);
+        h.resume();
+        assert_eq!(h.flushes(), before);
     }
 
     #[test]
@@ -6887,6 +7085,11 @@ mod tests {
             "gapless must not pause output"
         );
         assert!(data.sources.lock().current().is_some());
+        assert_eq!(
+            data.output_flush_generation(),
+            0,
+            "a gapless handoff must leave the queued tail of the old track alone"
+        );
 
         let finished = data.sources.lock().advance_to_next().unwrap();
         data.report_track_finished(finished, None);
@@ -6897,6 +7100,11 @@ mod tests {
         assert!(!transition_rx
             .try_recv()
             .expect("queue end must suspend output"));
+        assert_eq!(
+            data.output_flush_generation(),
+            0,
+            "the end of the queue must let the last track's tail play out"
+        );
         command_tx.send(AudioCommand::Shutdown).unwrap();
         thread.join().unwrap();
     }

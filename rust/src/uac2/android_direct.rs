@@ -89,8 +89,18 @@ const UAC1_REQUEST_GET_RES: u8 = 0x84;
 const UAC2_FEATURE_UNIT_MUTE_CONTROL: u16 = 0x0100;
 const UAC2_FEATURE_UNIT_VOLUME_CONTROL: u16 = 0x0200;
 const ISO_TRANSFER_TIMEOUT_MS: u32 = 1000;
-const ANDROID_USB_BUFFER_CAPACITY_MS: usize = 200;
-const ANDROID_USB_BUFFER_TARGET_MS: usize = 100;
+// The PCM ring between the render thread and the USB output thread. The render
+// thread keeps it topped up to the target, so a stall upstream (slow storage, a
+// network source, scheduling) shorter than the target is absorbed instead of
+// being heard as a dropout. Anything that must be heard *now* flushes the ring
+// (seek, stop, a user-chosen track), so the depth costs no responsiveness there;
+// it does delay a live DSP, EQ or software-gain change by the ring's fill.
+const ANDROID_USB_BUFFER_CAPACITY_MS: usize = 500;
+const ANDROID_USB_BUFFER_TARGET_MS: usize = 250;
+// How much the ring must hold before the stream starts, and before a flushed
+// ring resumes playing. Small on purpose: the ring fills on to its target while
+// playing, so starting or seeking does not wait for the deep buffer.
+const ANDROID_USB_START_THRESHOLD_MS: usize = 100;
 const ANDROID_USB_RENDER_CHUNK_MS: usize = 10;
 const ANDROID_USB_RENDER_POLL_MS: u64 = 2;
 // A lossy data URB (it timed out, or the DAC took fewer bytes than were queued)
@@ -688,6 +698,9 @@ struct AndroidDirectUsbRuntimeStats {
     channels: usize,
     buffer_capacity_samples: usize,
     buffer_target_samples: usize,
+    /// Ring fill that starts the stream and ends a post-flush hold; never above
+    /// the target.
+    start_threshold_samples: usize,
     transfer_queue_depth: AtomicUsize,
     frames_per_packet: AtomicUsize,
     buffered_samples: AtomicUsize,
@@ -1438,12 +1451,16 @@ impl AndroidDirectUsbRuntimeStats {
         let target_frames = frames_per_ms.saturating_mul(target_ms);
         let capacity_samples = capacity_frames.saturating_mul(channels);
         let target_samples = target_frames.saturating_mul(channels);
+        let start_threshold_samples = frames_per_ms
+            .saturating_mul(ANDROID_USB_START_THRESHOLD_MS.min(target_ms))
+            .saturating_mul(channels);
 
         Self {
             sample_rate,
             channels,
             buffer_capacity_samples: capacity_samples,
             buffer_target_samples: target_samples,
+            start_threshold_samples,
             transfer_queue_depth: AtomicUsize::new(0),
             frames_per_packet: AtomicUsize::new(0),
             buffered_samples: AtomicUsize::new(0),
@@ -5583,6 +5600,49 @@ impl Drop for AndroidDirectUsbBackend {
     }
 }
 
+/// Carry out the engine's latest output flush request, if there is one the ring
+/// has not seen yet: clear the ring and start a new flush epoch. Returns true if
+/// it flushed.
+fn apply_output_flush(
+    callback_data: &AudioCallbackData,
+    pcm_buffer: &Mutex<AndroidDirectUsbPcmRingBuffer>,
+    runtime_stats: &AndroidDirectUsbRuntimeStats,
+    applied_flush_generation: &mut u64,
+    ring_rate: u32,
+    channels: usize,
+) -> bool {
+    let flush_generation = callback_data.output_flush_generation();
+    if flush_generation == *applied_flush_generation {
+        return false;
+    }
+    let dropped_samples = {
+        let mut guard = pcm_buffer.lock();
+        let dropped_samples = guard.len_samples();
+        guard.clear();
+        // Under the ring lock, so a transfer filled afterwards carries the new
+        // epoch and one filled before it the old one.
+        runtime_stats
+            .flush_epoch
+            .store(guard.flush_epoch(), Ordering::Release);
+        dropped_samples
+    };
+    runtime_stats.buffered_samples.store(0, Ordering::Relaxed);
+    // Music already on the bus belongs to the old epoch and is no longer ahead
+    // of the new position; the output thread's next publish agrees.
+    runtime_stats
+        .inflight_music_frames
+        .store(0, Ordering::Relaxed);
+    *applied_flush_generation = flush_generation;
+    runtime_stats
+        .applied_flush_generation
+        .store(flush_generation, Ordering::Release);
+    dev_eprintln!(
+        "[USB] output flush dropped {}ms of queued audio",
+        samples_to_millis(dropped_samples, ring_rate, channels)
+    );
+    true
+}
+
 fn run_usb_render_loop(
     callback_data: Arc<AudioCallbackData>,
     event_tx: Sender<AudioEvent>,
@@ -5596,6 +5656,7 @@ fn run_usb_render_loop(
     let chunk_frames = ((ring_rate as usize * ANDROID_USB_RENDER_CHUNK_MS) / 1_000).max(1);
     let chunk_samples = chunk_frames.saturating_mul(channels);
     let target_samples = runtime_stats.buffer_target_samples;
+    let start_threshold_samples = runtime_stats.start_threshold_samples;
     let mut render_buffer = vec![0.0f32; chunk_samples];
     let mut pcm_samples = vec![0i32; chunk_samples];
     let mut warned_no_frames = false;
@@ -5616,35 +5677,17 @@ fn run_usb_render_loop(
         .store(applied_flush_generation, Ordering::Release);
     while !usb_stop_requested(&stop) {
         let cycle_start = Instant::now();
-        // Seek (or a new source replacing a paused one): drop what is queued so
-        // the output thread cannot play stale audio. This also runs while
-        // paused, when no chunk is being rendered.
-        let flush_generation = callback_data.output_flush_generation();
-        if flush_generation != applied_flush_generation {
-            let dropped_samples = {
-                let mut guard = pcm_buffer.lock();
-                let dropped_samples = guard.len_samples();
-                guard.clear();
-                // Under the ring lock, so a transfer filled afterwards carries
-                // the new epoch and one filled before it the old one.
-                runtime_stats
-                    .flush_epoch
-                    .store(guard.flush_epoch(), Ordering::Release);
-                dropped_samples
-            };
-            runtime_stats.buffered_samples.store(0, Ordering::Relaxed);
-            // Music already on the bus belongs to the old epoch and is no longer
-            // ahead of the new position; the output thread's next publish agrees.
-            runtime_stats.inflight_music_frames.store(0, Ordering::Relaxed);
-            applied_flush_generation = flush_generation;
-            runtime_stats
-                .applied_flush_generation
-                .store(applied_flush_generation, Ordering::Release);
-            dev_eprintln!(
-                "[USB] output flush dropped {}ms of queued audio",
-                samples_to_millis(dropped_samples, ring_rate, channels)
-            );
-        }
+        // A seek, a stop, or a new source replacing a live or paused one: drop
+        // what is queued so the output thread cannot play stale audio. This
+        // also runs while paused, when no chunk is being rendered.
+        apply_output_flush(
+            &callback_data,
+            &pcm_buffer,
+            &runtime_stats,
+            &mut applied_flush_generation,
+            ring_rate,
+            channels,
+        );
         // Paused: stop rendering instead of queueing silence. The ring keeps
         // the audio already rendered, so resume continues exactly where the
         // pause landed while the output thread sends silence in the meantime.
@@ -5676,6 +5719,14 @@ fn run_usb_render_loop(
                 ANDROID_USB_RENDER_CHUNK_MS,
                 count
             );
+        }
+        // With no source at all the chunk is idle silence. The ring keeps only a
+        // start threshold of it, not the deep target: otherwise the first audio
+        // of whatever plays next (a track started from a stop, or after the
+        // last one ended) would sit behind a quarter second of silence.
+        if buffered_samples >= start_threshold_samples && callback_data.is_idle() {
+            thread::sleep(Duration::from_millis(ANDROID_USB_RENDER_POLL_MS));
+            continue;
         }
         if render_buffer.is_empty() {
             if !warned_no_frames {
@@ -5793,6 +5844,19 @@ fn run_usb_render_loop(
             }
         }
 
+        // A flush requested while this chunk was rendered clears what is queued
+        // but keeps the chunk. It is either a little stale audio (at most one
+        // render chunk) or the first audio of the source that replaced the old
+        // one, which must never be the part that is dropped.
+        apply_output_flush(
+            &callback_data,
+            &pcm_buffer,
+            &runtime_stats,
+            &mut applied_flush_generation,
+            ring_rate,
+            channels,
+        );
+
         debug_assert!(
             pcm_samples.len() % channels == 0,
             "push_samples: input length {} is not frame-aligned (channels={})",
@@ -5901,7 +5965,10 @@ fn prepare_iso_transfer_payload(
     // must not clear the verified state.
     let (underrun, held, music_samples, epoch) = {
         let mut guard = pcm_buffer.lock();
-        let held = paused || guard.awaiting_refill(total_samples);
+        // After a flush, wait for the same small threshold that starts the
+        // stream (never less than one whole transfer), not the deep target.
+        let refill_samples = total_samples.max(runtime_stats.start_threshold_samples);
+        let held = paused || guard.awaiting_refill(refill_samples);
         let (underrun, music_samples) = if held {
             guard.fill_wire_silence(&mut packet_samples, dsd_transport);
             (false, 0)
@@ -6358,7 +6425,7 @@ fn run_usb_output_loop(
     let mut active_slots = 0usize;
     let mut fatal_error: Option<String> = None;
 
-    let priming_target = runtime_stats.buffer_target_samples;
+    let priming_target = runtime_stats.start_threshold_samples;
     log_info!(
         "[USB] Isochronous queue: serviceIntervalUs={} packetsPerTransfer={} slots={} stableTransfers={}",
         candidate.service_interval_us,
@@ -6367,8 +6434,9 @@ fn run_usb_output_loop(
         geometry.stable_transfers,
     );
     log_info!(
-        "[USB] Waiting for stream prime: buffered_samples must reach buffer_target_samples={} before isochronous submit",
+        "[USB] Waiting for stream prime: buffered_samples must reach start_threshold_samples={} before isochronous submit (the ring fills on to its {}-sample target while playing)",
         priming_target,
+        runtime_stats.buffer_target_samples,
     );
     while !usb_stop_requested(&stop) {
         let buffered = runtime_stats.buffered_samples.load(Ordering::Relaxed);
@@ -9706,24 +9774,34 @@ mod pcm_ring_hold_tests {
         .unwrap()
     }
 
+    fn deep_ring_stats() -> AndroidDirectUsbRuntimeStats {
+        AndroidDirectUsbRuntimeStats::new(
+            48_000,
+            2,
+            ANDROID_USB_BUFFER_CAPACITY_MS,
+            ANDROID_USB_BUFFER_TARGET_MS,
+        )
+    }
+
     #[test]
     fn held_transfers_are_silent_unconsumed_and_not_underruns() {
         let _latch = PAYLOAD_LATCH_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let stats = AndroidDirectUsbRuntimeStats::new(48_000, 2, 200, 100);
+        let stats = deep_ring_stats();
+        let threshold = stats.start_threshold_samples;
         let ring = Arc::new(Mutex::new(AndroidDirectUsbPcmRingBuffer::new(
             stats.buffer_capacity_samples,
             2,
         )));
         // Distinct 16-bit values so the payload audit sees real audio.
-        let music: Vec<i32> = (1..=2_000).map(|i| i << 16).collect();
-        assert_eq!(ring.lock().push_samples(&music), 2_000);
+        let music: Vec<i32> = (1..=20_000).map(|i| i << 16).collect();
+        assert_eq!(ring.lock().push_samples(&music), 20_000);
         USB_PCM_PAYLOAD_LATCH.lock().reset();
 
         let paused = prepare(&ring, &stats, true);
         assert!(!paused.underrun);
         assert!(paused.held, "a paused transfer is marked held");
         assert!(paused.transfer_buffer.iter().all(|byte| *byte == 0));
-        assert_eq!(ring.lock().len_samples(), 2_000, "pause consumes nothing");
+        assert_eq!(ring.lock().len_samples(), 20_000, "pause consumes nothing");
         {
             let latch = USB_PCM_PAYLOAD_LATCH.lock();
             assert!(!latch.is_verified());
@@ -9734,7 +9812,7 @@ mod pcm_ring_hold_tests {
         assert!(!playing.underrun);
         assert!(!playing.held, "audio from the ring is never held");
         assert!(playing.transfer_buffer.iter().any(|byte| *byte != 0));
-        let consumed = 2_000 - ring.lock().len_samples();
+        let consumed = 20_000 - ring.lock().len_samples();
         assert_eq!(consumed, playing.packet_samples.len());
         assert_eq!(
             playing.packet_samples[0],
@@ -9743,7 +9821,7 @@ mod pcm_ring_hold_tests {
         );
         assert!(USB_PCM_PAYLOAD_LATCH.lock().is_verified());
 
-        // A flushed ring holds silence until a whole transfer is queued.
+        // A flushed ring holds silence until it has the start threshold.
         ring.lock().clear();
         let flushed = prepare(&ring, &stats, false);
         assert!(!flushed.underrun, "a flush is not an underrun");
@@ -9751,15 +9829,89 @@ mod pcm_ring_hold_tests {
         assert!(flushed.transfer_buffer.iter().all(|byte| *byte == 0));
         assert_eq!(ring.lock().len_samples(), 0);
 
-        // Once the ring has been refilled, a drain is a genuine underrun.
-        assert_eq!(ring.lock().push_samples(&music[..1_000]), 1_000);
+        // Below the threshold the hold goes on, however much has arrived.
+        assert_eq!(ring.lock().push_samples(&music[..threshold - 2]), threshold - 2);
+        let waiting = prepare(&ring, &stats, false);
+        assert!(waiting.held && !waiting.underrun);
+        assert_eq!(ring.lock().len_samples(), threshold - 2, "a hold consumes nothing");
+
+        // At the threshold it ends, and a later drain is a genuine underrun.
+        assert_eq!(ring.lock().push_samples(&music[..2]), 2);
         let refilled = prepare(&ring, &stats, false);
         assert!(!refilled.underrun && !refilled.held);
+        let queued = ring.lock().len_samples();
         ring.lock()
-            .pop_into_or_pad(&mut vec![0; 4_000], 2, DsdTransportMode::None);
+            .pop_into_or_pad(&mut vec![0; queued], 2, DsdTransportMode::None);
         let drained = prepare(&ring, &stats, false);
         assert!(drained.underrun, "a drain after the refill is an underrun");
         assert!(!drained.held, "an underrun is padding, not a hold");
+    }
+
+    #[test]
+    fn the_buffer_is_deep_but_the_stream_starts_and_resumes_on_a_small_threshold() {
+        assert_eq!(ANDROID_USB_BUFFER_TARGET_MS, 250);
+        assert_eq!(ANDROID_USB_BUFFER_CAPACITY_MS, 500);
+        assert_eq!(ANDROID_USB_START_THRESHOLD_MS, 100);
+
+        let stats = deep_ring_stats();
+        let frames_per_ms = 48;
+        assert_eq!(stats.buffer_target_samples, frames_per_ms * 250 * 2);
+        assert_eq!(stats.buffer_capacity_samples, frames_per_ms * 500 * 2);
+        assert_eq!(stats.start_threshold_samples, frames_per_ms * 100 * 2);
+        assert!(stats.start_threshold_samples < stats.buffer_target_samples);
+        assert!(stats.buffer_target_samples < stats.buffer_capacity_samples);
+
+        // A target below the threshold lowers the threshold with it.
+        let shallow = AndroidDirectUsbRuntimeStats::new(48_000, 2, 100, 50);
+        assert_eq!(shallow.start_threshold_samples, shallow.buffer_target_samples);
+    }
+
+    #[test]
+    fn a_requested_flush_clears_the_ring_once_and_starts_a_new_epoch() {
+        let (finished_tx, _finished_rx) = crossbeam_channel::bounded(1);
+        let callback_data = crate::audio::engine::AudioCallbackData::new(
+            48_000,
+            2,
+            finished_tx,
+            crate::audio::engine::PipelineMode::Passthrough,
+            crate::audio::engine::EngineDsdMode::Pcm,
+        );
+        let stats = deep_ring_stats();
+        let ring = Mutex::new(AndroidDirectUsbPcmRingBuffer::new(
+            stats.buffer_capacity_samples,
+            2,
+        ));
+        let music: Vec<i32> = (1..=4_000).collect();
+        assert_eq!(ring.lock().push_samples(&music), 4_000);
+        stats.buffered_samples.store(4_000, Ordering::Relaxed);
+        stats.inflight_music_frames.store(96, Ordering::Relaxed);
+
+        let mut applied = callback_data.output_flush_generation();
+        // Nothing requested: nothing happens.
+        assert!(!apply_output_flush(&callback_data, &ring, &stats, &mut applied, 48_000, 2));
+        assert_eq!(ring.lock().len_samples(), 4_000);
+
+        callback_data.request_output_flush();
+        assert!(apply_output_flush(&callback_data, &ring, &stats, &mut applied, 48_000, 2));
+        assert_eq!(ring.lock().len_samples(), 0);
+        assert_eq!(stats.buffered_samples.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.inflight_music_frames.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.flush_epoch.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            stats.applied_flush_generation.load(Ordering::Relaxed),
+            callback_data.output_flush_generation()
+        );
+
+        // The request has been carried out, so a second look does nothing.
+        assert!(!apply_output_flush(&callback_data, &ring, &stats, &mut applied, 48_000, 2));
+
+        // A flush requested while a chunk was being rendered keeps the chunk:
+        // it is applied before the chunk is pushed, so the chunk survives it.
+        callback_data.request_output_flush();
+        assert!(apply_output_flush(&callback_data, &ring, &stats, &mut applied, 48_000, 2));
+        assert_eq!(ring.lock().push_samples(&music[..960]), 960);
+        assert_eq!(ring.lock().len_samples(), 960, "the chunk is queued after the flush");
+        assert_eq!(stats.flush_epoch.load(Ordering::Relaxed), 2);
     }
 
     #[test]
@@ -9824,13 +9976,14 @@ mod pcm_ring_hold_tests {
     #[test]
     fn transfers_report_their_music_frames_and_the_flush_epoch_they_were_filled_in() {
         let _latch = PAYLOAD_LATCH_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let stats = AndroidDirectUsbRuntimeStats::new(48_000, 2, 200, 100);
+        let stats = deep_ring_stats();
+        let threshold = stats.start_threshold_samples;
         let ring = Arc::new(Mutex::new(AndroidDirectUsbPcmRingBuffer::new(
             stats.buffer_capacity_samples,
             2,
         )));
-        let music: Vec<i32> = (1..=2_000).map(|i| i << 16).collect();
-        assert_eq!(ring.lock().push_samples(&music), 2_000);
+        let music: Vec<i32> = (1..=20_000).map(|i| i << 16).collect();
+        assert_eq!(ring.lock().push_samples(&music), 20_000);
 
         // Playing: every frame of the transfer is music.
         let playing = prepare(&ring, &stats, false);
@@ -9848,17 +10001,20 @@ mod pcm_ring_hold_tests {
         assert_eq!(refilling.music_frames, 0);
         assert_eq!(refilling.epoch, 1, "filled after the flush");
 
-        // Underrun: only what the ring still had is music, the rest is padding.
-        let half = playing.frame_count / 2;
-        assert_eq!(ring.lock().push_samples(&music[..half * 2]), half * 2);
-        // Satisfy the refill wait first, then drain into a short transfer.
-        let first = prepare(&ring, &stats, false);
-        assert!(first.held, "half a transfer is not enough to leave the hold");
-        assert_eq!(ring.lock().push_samples(&music[..playing.frame_count * 2]), playing.frame_count * 2);
+        // Back at the start threshold the hold ends and music flows again.
+        assert_eq!(ring.lock().push_samples(&music[..threshold]), threshold);
         let full = prepare(&ring, &stats, false);
+        assert!(!full.held);
         assert_eq!(full.music_frames, full.frame_count);
+        assert_eq!(full.epoch, 1);
+
+        // Underrun: only what the ring still had is music, the rest is padding.
+        let queued = ring.lock().len_samples();
+        ring.lock()
+            .pop_into_or_pad(&mut vec![0; queued - 10], 2, DsdTransportMode::None);
         let dry = prepare(&ring, &stats, false);
         assert!(dry.underrun);
+        assert_eq!(dry.music_frames, 5, "ten samples are five stereo frames");
         assert!(dry.music_frames < dry.frame_count, "padding is not music");
         assert_eq!(dry.epoch, 1);
     }
