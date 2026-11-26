@@ -11,7 +11,7 @@ default = ["native_audio", "uac2"]
 # Enable native audio engine (now enabled on Android with CPAL/Oboe)
 native_audio = ["cpal", "symphonia", "rubato", "ringbuf", "crossbeam-channel", "wavpack-sys", "opus-sys", "soundtouch-sys", "ureq"]
 # Custom UAC 2.0 USB Audio (host-side DAC/AMP support)
-uac2 = ["rusb", "libusb1-sys"]
+uac2 = ["rusb", "libusb1-sys", "usbdac-core"]
 
 [dependencies]
 flutter_rust_bridge = "=2.13.0"
@@ -41,6 +41,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # UAC 2.0 USB host (optional, for DAC/AMP detection and direct playback paths)
 rusb = { version = "0.9", optional = true }
 libusb1-sys = { version = "0.7", optional = true }
+
+# Direct USB DAC output: the isochronous transport, clock, volume and loss
+# accounting live in the usbdac library; src/uac2/usbdac_adapter drives it.
+# Pinned by path while its additive changes (feat/flick-needs) are unmerged.
+usbdac-core = { path = "/private/tmp/claude-501/-Users-jneerdael-Scripts-Flick/76f71e09-57a3-44de-b53d-0de3fa6625ce/scratchpad/usbdac-flick-needs/crates/usbdac-core", optional = true }
 
 # Async runtime for serialized engine initialization and UAC2 tasks
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros", "io-util"] }

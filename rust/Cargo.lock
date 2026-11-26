@@ -1992,6 +1992,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ureq",
+ "usbdac-core",
  "walkdir",
  "wavpack-sys",
 ]
@@ -2767,6 +2768,19 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+]
+
+[[package]]
+name = "usbdac-core"
+version = "0.1.0-alpha.3"
+dependencies = [
+ "crossbeam-channel",
+ "libc",
+ "libusb1-sys",
+ "log",
+ "once_cell",
+ "parking_lot",
+ "rusb",
 ]
 
 [[package]]

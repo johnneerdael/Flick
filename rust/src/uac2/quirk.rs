@@ -78,6 +78,18 @@ impl QuirkDatabase {
         result
     }
 
+    /// The quirks of every entry for this VID/PID, whatever the product name.
+    /// For the few behaviours that were always matched by VID/PID alone.
+    pub fn lookup_any_name(&self, vendor_id: u16, product_id: u16) -> Vec<UsbAudioQuirk> {
+        let mut result = Vec::new();
+        for entry in self.entries.read().iter() {
+            if entry.vendor_id == vendor_id && entry.product_id == product_id {
+                result.extend_from_slice(entry.quirks);
+            }
+        }
+        result
+    }
+
     pub fn has_quirk(
         &self,
         vendor_id: u16,
@@ -159,6 +171,14 @@ mod tests {
         let quirks = QUIRK_DATABASE.lookup(9770, 1, "Fosi Audio DS2");
         assert!(quirks.contains(&UsbAudioQuirk::SkipClockValidation));
         assert!(quirks.contains(&UsbAudioQuirk::IgnoreInvalidSampleRate));
+    }
+
+    #[test]
+    fn lookup_any_name_ignores_the_product_name() {
+        let named = QUIRK_DATABASE.lookup_any_name(12230, 61546);
+        assert!(named.contains(&UsbAudioQuirk::PreferPadded24BitTransport));
+        assert!(QUIRK_DATABASE.lookup(12230, 61546, "Some other name").is_empty());
+        assert!(QUIRK_DATABASE.lookup_any_name(1, 2).is_empty());
     }
 
     #[test]

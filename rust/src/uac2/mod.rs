@@ -6,6 +6,8 @@
 #[cfg(all(feature = "uac2", target_os = "android"))]
 mod android_direct;
 #[cfg(feature = "uac2")]
+mod usbdac_adapter;
+#[cfg(feature = "uac2")]
 mod audio_format;
 #[cfg(feature = "uac2")]
 mod audio_pipeline;
