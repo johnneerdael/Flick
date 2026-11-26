@@ -109,10 +109,29 @@ pub fn assert_android_debug_logging() {}
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeInitRustAndroidContext<'local>(
-    mut env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _activity: JObject<'_>,
     context: JObject<'local>,
 ) -> jboolean {
+    init_rust_android_context(env, context)
+}
+
+/// Same initialisation, reached from `FlickEngine` before Dart starts, so an
+/// engine created with no activity (Android Auto, a media button) has the
+/// Android context too. Without it the first `ndk_context::android_context()`
+/// call panics.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_mossapps_flick_FlickEngine_nativeInitRustAndroidContext<'local>(
+    env: JNIEnv<'local>,
+    _engine: JObject<'_>,
+    context: JObject<'local>,
+) -> jboolean {
+    init_rust_android_context(env, context)
+}
+
+#[cfg(target_os = "android")]
+fn init_rust_android_context<'local>(mut env: JNIEnv<'local>, context: JObject<'local>) -> jboolean {
     env.with_env(|env| -> jni::errors::Result<()> {
         match initialize_android_app_context(env, &context) {
             Ok(()) => {

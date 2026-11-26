@@ -2,6 +2,7 @@ package com.mossapps.flick
 
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.FlutterEngineCache
@@ -27,6 +28,32 @@ object FlickEngine {
 
     private val lock = Any()
     private var preparedEngine: WeakReference<FlutterEngine>? = null
+    private var rustContextReady = false
+
+    // The Rust library must be loaded before nativeInitRustAndroidContext.
+    init {
+        System.loadLibrary("rust_lib_flick_player")
+    }
+
+    private external fun nativeInitRustAndroidContext(context: Context): Boolean
+
+    /**
+     * Hands Rust the application context. Rust audio (AAudio, native DSD)
+     * panics without it, and the activity is not there on a car or media-button
+     * start, so it happens here, before Dart runs. A failure is logged and not
+     * thrown: the app must still start.
+     */
+    private fun initRustContext(context: Context) {
+        if (rustContextReady) return
+        try {
+            rustContextReady = nativeInitRustAndroidContext(context.applicationContext)
+            if (!rustContextReady) {
+                Log.e("Flick", "Failed to initialize Rust Android audio context")
+            }
+        } catch (t: Throwable) {
+            Log.e("Flick", "Rust Android audio context init threw", t)
+        }
+    }
     private var playerChannel: MethodChannel? = null
 
     /**
@@ -77,6 +104,7 @@ object FlickEngine {
                 return
             }
 
+            initRustContext(context)
             GeneratedPluginRegistrant.registerWith(engine)
             engine.plugins.add(FlickVisualizerPlugin())
             registerPlayerChannel(context.applicationContext, engine)
