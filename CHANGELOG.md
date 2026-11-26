@@ -8,6 +8,11 @@
 - **USB reconnect:** Playback can resume from the retained position on the same verified DAC. Manual pause, pause-on-connect, failed volume checks, and an unverified DAC keep it paused.
 - **Direct USB on high-speed DACs:** PCM at a 125 µs service interval uses a shorter transfer queue to address stalls observed on the OnePlus 15 and iBasso DC04U. Packet validation and timeout handling remain strict.
 
+### USB DAC volume
+- **Live DAC slider** — dragging a hardware-volume slider now moves the DAC as you drag. One write is in flight at a time and the newest value replaces any queued one, so the DAC ends on the final position; the thumb stays under your finger until that write is read back. All existing safety pauses and route checks still run on every write.
+- **Audible slider range** — above 0 %, the slider now spans the DAC's range from −80 dB (or its minimum, if higher) to its maximum, instead of the full range down to a typical −127 dB; 0 % is still the DAC minimum. DACs whose minimum is above −80 dB are unchanged.
+- **Saved DAC levels keep their loudness** — a level saved before this change meant a different attenuation, so it is converted to the same dB and still limited by the low startup default, never replayed as the same percentage.
+
 ## 0.23.3-beta.5 (2026-11-20)
 
 ### Equalizer
