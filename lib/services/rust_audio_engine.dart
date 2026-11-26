@@ -56,9 +56,14 @@ class RustAudioEngine implements AudioEngine {
   bool _initialized = false;
   Future<void>? _initInFlight;
   bool _needsFreshPlay = false;
+  bool _outputReleased = false;
 
   @override
   Stream<PlaybackState> get playbackStateStream => _controller.stream;
+
+  /// Whether native output is closed while the loaded track and position are
+  /// kept for the next [play].
+  bool get isOutputReleased => _outputReleased;
 
   Future<void> _safeEnsureInitialized() async {
     if (_initialized) return;
@@ -135,6 +140,7 @@ class RustAudioEngine implements AudioEngine {
     _attachListeners();
     _loadedTrack = track;
     _needsFreshPlay = true;
+    _outputReleased = false;
     _pendingSeekPosition = Duration.zero;
     // Do not publish the selection here. `play()` can still fail (dead engine,
     // refused route, unreadable source); until the native engine accepts the
@@ -221,6 +227,7 @@ class RustAudioEngine implements AudioEngine {
             // A track switch while already playing leaves the Rust state
             // notifier unchanged, so sync the engine's UI state explicitly.
             _needsFreshPlay = false;
+            _outputReleased = false;
             _emitAcceptedTrack(track);
             await _applyInitialSeekAfterStart();
             return;
@@ -257,6 +264,7 @@ class RustAudioEngine implements AudioEngine {
     // See the HTTP path above: switching tracks during playback does not
     // change the native state string, so emit the accepted play here.
     _needsFreshPlay = false;
+    _outputReleased = false;
     _emitAcceptedTrack(track);
     await _applyInitialSeekAfterStart();
   }
@@ -280,8 +288,22 @@ class RustAudioEngine implements AudioEngine {
     _pendingSeekPosition = null;
   }
 
+  /// Closes native output (and any isochronous USB stream) while keeping the
+  /// loaded track and its position. The next [play] starts the track again and
+  /// seeks back; a [seek] in between only stages the new position. Safe to
+  /// repeat: the engine may have been reopened silently in the meantime.
+  Future<bool> releaseOutput() async {
+    if (_loadedTrack == null) return false;
+    _pendingSeekPosition = _state.position;
+    _needsFreshPlay = true;
+    _outputReleased = true;
+    await _rustAudioService.releaseEngine();
+    return true;
+  }
+
   @override
   Future<void> pause() async {
+    if (_outputReleased) return; // Nothing native left to pause.
     await _safeEnsureInitialized();
     _attachListeners();
     await _rustAudioService.pause();
@@ -289,6 +311,7 @@ class RustAudioEngine implements AudioEngine {
 
   @override
   Future<void> stop() async {
+    if (_outputReleased) return; // Nothing native left to stop.
     await _safeEnsureInitialized();
     _attachListeners();
     await _rustAudioService.stop();
@@ -299,6 +322,11 @@ class RustAudioEngine implements AudioEngine {
     await _safeEnsureInitialized();
     _attachListeners();
     _pendingSeekPosition = position;
+    if (_outputReleased) {
+      // Only stage it: play() applies the position, a seek must not reopen.
+      _emit(_state.copyWith(position: position));
+      return;
+    }
     // A seek between load() and the engine's play acknowledgement is deferred;
     // even reloading the same song must not seek the outgoing play instance.
     if (_needsFreshPlay) return;
