@@ -22,6 +22,20 @@ internal class DirectUsbInterfaceClaims<T>(
         }
     }
 
+    fun successfulClaims(): List<T> = claimed.toList()
+
+    /** Optional feedback sources must never turn a usable playback claim into a refusal. */
+    fun claimOptional(interfaces: List<T>): List<T> = interfaces.filter { usbInterface ->
+        if (usbInterface in claimed) return@filter false
+        try {
+            forceClaim(usbInterface)
+            claimed += usbInterface
+            false
+        } catch (_: Exception) {
+            true
+        }
+    }
+
     fun release() {
         try {
             claimed.asReversed().forEach(releaseInterface)

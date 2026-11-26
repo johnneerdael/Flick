@@ -55,4 +55,32 @@ class DirectUsbInterfaceClaimsTest {
             events,
         )
     }
+    @Test
+    fun optionalFailuresPreservePlaybackAndReleaseOnlySuccessfulClaims() {
+        val registration = claims { if (it == 5) error("capture busy") }
+        assertTrue(registration.register({ listOf(1, 4) }) {
+            assertEquals(listOf(5), registration.claimOptional(listOf(4, 5, 6, 6)))
+            assertEquals(listOf(1, 4, 6), registration.successfulClaims())
+            true
+        })
+        registration.release()
+        assertEquals(
+            listOf("claim 1", "claim 4", "claim 5", "claim 6", "release 6", "release 4", "release 1", "close"),
+            events,
+        )
+    }
+
+    @Test
+    fun nativeRefusalRollsBackOptionalClaimsInReverseOrder() {
+        val registration = claims()
+        assertFalse(registration.register({ listOf(1, 4) }) {
+            assertTrue(registration.claimOptional(listOf(6)).isEmpty())
+            false
+        })
+        assertEquals(
+            listOf("claim 1", "claim 4", "claim 6", "release 6", "release 4", "release 1", "close"),
+            events,
+        )
+    }
+
 }

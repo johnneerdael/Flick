@@ -14,7 +14,7 @@ use std::os::fd::RawFd;
 use std::sync::Arc;
 use usbdac_core::{
     AltFormat, BitPerfectBlocker, Capabilities, CloseVolume, Dac, DacConfig, DacListener,
-    DacStream, DeviceInfo, EndpointUsage, Encoding, Error, LinkSpeed, StreamFormat, StreamRequest,
+    DacStream, DeviceInfo, EndpointUsage, Encoding, Error, LinkSpeed, Pacing, StreamFormat, StreamRequest,
     StreamStats, SyncKind, VolumeControl, VolumeState,
 };
 
@@ -37,7 +37,6 @@ pub(crate) struct AltFacts {
     pub usage_type: &'static str,
     pub refresh: u8,
     pub synch_address: u8,
-    pub feedback_endpoint: Option<u8>,
 }
 
 /// What the DAC offers, from the descriptors scanned when it was opened.
@@ -71,7 +70,7 @@ pub(crate) struct FormatFacts {
     pub alt_setting: u8,
     pub endpoint_address: u8,
     pub sync_type: &'static str,
-    pub explicit_feedback: bool,
+    pub feedback_endpoint: Option<u8>,
     pub service_interval_us: u32,
     /// The unit of the stream's frame counters (`bit_rate / 8` for native DSD).
     pub counter_rate_hz: u32,
@@ -84,7 +83,7 @@ pub(crate) struct FormatFacts {
     /// (`StreamFormat::clock`).
     pub clock_id: Option<u8>,
     /// How the library paces the endpoint: the stable code of
-    /// `StreamFormat::pacing` (`explicit_feedback`, `adaptive`, `synchronous`,
+    /// `StreamFormat::pacing` (`explicit_feedback`, `implicit_feedback`, `adaptive`, `synchronous`,
     /// `unsynchronized`).
     pub pacing: &'static str,
     /// The library's own format, which `open_stream` needs. Absent in fakes.
@@ -107,7 +106,7 @@ impl FormatFacts {
             alt_setting: format.alt_setting,
             endpoint_address: format.endpoint_address,
             sync_type: sync_label(format.sync_type),
-            explicit_feedback: format.explicit_feedback,
+            feedback_endpoint: selected_feedback_endpoint(format.pacing),
             service_interval_us: format.service_interval_us,
             counter_rate_hz: format.counter_rate_hz(),
             rate_differs_from_request: format.rate_differs_from_request(),
@@ -465,7 +464,6 @@ fn facts_from_capabilities(capabilities: &Capabilities) -> DacFacts {
                 usage_type: usage_label(alt.usage),
                 refresh: alt.refresh,
                 synch_address: alt.synch_address,
-                feedback_endpoint: alt.feedback_endpoint,
             })
             .collect(),
         has_mute: capabilities.has_mute,
@@ -473,5 +471,15 @@ fn facts_from_capabilities(capabilities: &Capabilities) -> DacFacts {
             let raw = |db: f64| (db * 256.0).round().clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
             (raw(range.min_db), raw(range.max_db), raw(range.res_db))
         }),
+    }
+}
+
+/// Use the selected pacing source, rather than an advertised but unused endpoint.
+pub(crate) fn selected_feedback_endpoint(pacing: Pacing) -> Option<u8> {
+    match pacing {
+        Pacing::ExplicitFeedback { endpoint } | Pacing::ImplicitFeedback { endpoint, .. } => {
+            Some(endpoint)
+        }
+        _ => None,
     }
 }

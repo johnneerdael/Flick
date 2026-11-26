@@ -239,6 +239,7 @@ struct FakeDac {
     /// The (AudioControl interface, Clock Source) a negotiation reports; `None`
     /// is a DAC that describes no clock entities.
     clock: Mutex<Option<(u8, u8)>>,
+    pacing: Mutex<usbdac_core::Pacing>,
     open_error: Mutex<Option<Error>>,
     opened: AtomicUsize,
     listener: Mutex<Option<Arc<dyn DacListener>>>,
@@ -264,6 +265,7 @@ impl FakeDac {
             rate_override: Mutex::new(None),
             negotiate_error: Mutex::new(None),
             clock: Mutex::new(Some((0, 5))),
+            pacing: Mutex::new(usbdac_core::Pacing::ExplicitFeedback { endpoint: 0x81 }),
             open_error: Mutex::new(None),
             opened: AtomicUsize::new(0),
             listener: Mutex::new(None),
@@ -327,6 +329,7 @@ impl DacPort for FakeDac {
             }
         };
         let clock = *self.clock.lock();
+        let pacing = *self.pacing.lock();
         Ok(FormatFacts {
             encoding,
             sample_rate: rate,
@@ -337,13 +340,13 @@ impl DacPort for FakeDac {
             alt_setting: 2,
             endpoint_address: 0x01,
             sync_type: "asynchronous",
-            explicit_feedback: true,
+            feedback_endpoint: ports::selected_feedback_endpoint(pacing),
             service_interval_us: 125,
             counter_rate_hz: counter,
             rate_differs_from_request: !native && rate != request.sample_rate,
             clock_interface_number: clock.map(|(interface, _)| interface),
             clock_id: clock.map(|(_, source)| source),
-            pacing: "explicit_feedback",
+            pacing: pacing.code(),
             native: None,
         })
     }
@@ -419,6 +422,8 @@ fn named_device(vendor: u16, product: u16, name: &str) -> AndroidDirectUsbDevice
         name.to_string(),
         Some("/dev/bus/usb/001/002".to_string()),
         vec![0, 1, 2],
+        1,
+        vec![3],
     )
     .unwrap()
 }
@@ -518,6 +523,8 @@ fn registering_opens_the_dac_with_flicks_policy_and_quirks() {
     assert_eq!(info.product_name, "MOONDROP Dawn Pro");
     assert_eq!(info.device_name.as_deref(), Some("/dev/bus/usb/001/002"));
     assert_eq!(info.claimed_interfaces, vec![0, 1, 2], "exactly what Kotlin claimed");
+    assert_eq!(info.configuration_id, Some(1));
+    assert_eq!(info.unavailable_feedback_interfaces, vec![3]);
     assert_eq!(config.startup_volume, StartupVolume::Keep);
     assert!(!config.require_hardware_volume);
     assert_eq!(config.hand_back, HandBack::Keep);
@@ -740,7 +747,7 @@ fn an_exact_rate_is_negotiated_as_it_was_asked() {
 }
 
 #[test]
-fn a_dac_that_would_need_implicit_feedback_falls_back_like_one_that_cannot_carry_the_format() {
+fn an_unusable_implicit_feedback_route_falls_back_like_one_that_cannot_carry_the_format() {
     let _serial = serial();
     let fake = FakeDac::new();
     registered_pcm(&fake, 44_100, 24);
@@ -1481,7 +1488,6 @@ fn alt(format: &'static str, bits: u8, subslot: u8, rates: &[u32]) -> AltFacts {
         usage_type: "data",
         refresh: 0,
         synch_address: 0,
-        feedback_endpoint: Some(0x81),
     }
 }
 
@@ -1706,5 +1712,39 @@ fn the_clock_policy_comes_from_flicks_quirk_table() {
     assert_eq!(
         android_direct_debug_state().dac_clock_policy.as_deref(),
         Some(DacClockPolicy::AllowUnverified.label())
+    );
+}
+
+#[test]
+fn diagnostics_report_selected_implicit_and_unsynchronized_pacing() {
+    for (pacing, endpoint) in [
+        (
+            usbdac_core::Pacing::ImplicitFeedback {
+                interface_number: 3,
+                alt_setting: 1,
+                endpoint: 0x83,
+            },
+            Some(0x83),
+        ),
+        (usbdac_core::Pacing::Unsynchronized, None),
+    ] {
+        let _serial = serial();
+        let fake = FakeDac::new();
+        *fake.facts.lock() = facts();
+        *fake.pacing.lock() = pacing;
+        let (mut backend, _) = started(&fake, &callback_data(48_000), 48_000);
+        let state = android_direct_debug_state();
+        assert_eq!(state.feedback_endpoint_address, endpoint);
+        assert_eq!(state.feedback_endpoint_present, endpoint.is_some());
+        assert_eq!(state.feedback_transfer_type.as_deref(), Some(pacing.code()));
+        backend.stop().unwrap();
+    }
+}
+
+#[test]
+fn unlocked_feedback_is_reported_as_a_bit_perfect_blocker() {
+    assert_eq!(
+        diagnostics::blocker_reason(Some(BitPerfectBlocker::FeedbackUnlocked)),
+        "feedback pacing has not locked"
     );
 }

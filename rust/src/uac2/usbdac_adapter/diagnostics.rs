@@ -82,7 +82,7 @@ pub struct AndroidDirectUsbDebugState {
     pub hardware_volume_generation: u64,
     pub feedback_endpoint_present: bool,
     pub feedback_endpoint_address: Option<u8>,
-    /// How the open stream is paced, as the library labels it: `explicit_feedback`,
+    /// How the open stream is paced, as the library labels it: `explicit_feedback`, `implicit_feedback`,
     /// `adaptive`, `synchronous` or `unsynchronized`. The library does not report
     /// the USB transfer type of the feedback endpoint (`isochronous` or
     /// `interrupt`), which the in-tree driver put here; nothing reads this key.
@@ -339,7 +339,8 @@ fn build(snapshot: Snapshot) -> AndroidDirectUsbDebugState {
     state.transport_subslot_size = Some(format.subslot_bytes);
     state.transport_bit_resolution = Some(format.valid_bits);
     state.active_sync_type = Some(format.sync_type.to_string());
-    state.feedback_endpoint_present = format.explicit_feedback;
+    state.feedback_endpoint_present = format.feedback_endpoint.is_some();
+    state.feedback_endpoint_address = format.feedback_endpoint;
     state.clock_interface_number = format.clock_interface_number;
     state.clock_id = format.clock_id;
     state.feedback_transfer_type = Some(format.pacing.to_string());
@@ -352,7 +353,6 @@ fn build(snapshot: Snapshot) -> AndroidDirectUsbDebugState {
         state.active_usage_type = Some(alt.usage_type.to_string());
         state.active_refresh = Some(alt.refresh);
         state.active_synch_address = Some(alt.synch_address);
-        state.feedback_endpoint_address = alt.feedback_endpoint;
     }
 
     let counter_rate = u64::from(format.counter_rate_hz.max(1));
@@ -390,6 +390,7 @@ pub(crate) fn blocker_reason(blocker: Option<BitPerfectBlocker>) -> &'static str
         Some(BitPerfectBlocker::LostFrames) => "audio lost on the USB transport",
         Some(BitPerfectBlocker::FormatChanged) => "requested/effective format mismatch",
         Some(BitPerfectBlocker::ClockUnverified) => "clock verification reset",
+        Some(BitPerfectBlocker::FeedbackUnlocked) => "feedback pacing has not locked",
         Some(BitPerfectBlocker::SoftwareGain) => "software gain active",
         Some(BitPerfectBlocker::UnsynchronizedAsync) => {
             "asynchronous endpoint without feedback, host-paced at the nominal rate"

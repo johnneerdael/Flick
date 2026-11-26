@@ -62,7 +62,7 @@ impl EventMapper {
             DacEvent::VolumeChanged(state) => vec![Effect::Volume(state)],
             DacEvent::FeedbackStale => vec![Effect::Warn(
                 "[USB] the feedback endpoint stopped producing valid reports; \
-                 nominal timing or the last good value stays in force"
+                 feedback pacing is stale and the transport may stop if it cannot recover"
                     .to_string(),
             )],
             DacEvent::Error(error) => self.failure(&error),

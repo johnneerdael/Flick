@@ -1,7 +1,7 @@
 //! Flick's direct USB DAC output, on top of the `usbdac-core` library.
 //!
 //! The library owns the USB side: descriptors, clock programming and
-//! verification, isochronous transfers with explicit-feedback timing, loss
+//! verification, isochronous transfers with explicit or implicit feedback timing, loss
 //! accounting, the ring, the wire payload audit and the DAC's hardware volume.
 //! This module is what is Flick's: it registers the DAC Kotlin has claimed,
 //! turns the engine's formats and DSD modes into library requests, runs the
@@ -67,6 +67,8 @@ fn set_audio_thread_priority() -> Result<(), std::io::Error> {
 pub struct AndroidDirectUsbDevice {
     pub fd: RawFd,
     claimed_interfaces: Arc<[u8]>,
+    configuration_id: u8,
+    unavailable_feedback_interfaces: Arc<[u8]>,
     pub vendor_id: u16,
     pub product_id: u16,
     pub product_name: String,
@@ -81,15 +83,22 @@ impl AndroidDirectUsbDevice {
         product_name: String,
         device_name: Option<String>,
         claimed_interfaces: Vec<u8>,
+        configuration_id: u8,
+        unavailable_feedback_interfaces: Vec<u8>,
     ) -> Result<Self, String> {
         // The library duplicates the descriptor for itself; Kotlin keeps its own
         // open until the DAC has been released.
         if fd < 0 {
             return Err(format!("Invalid Android USB file descriptor: {fd}"));
         }
+        if configuration_id == 0 {
+            return Err("Invalid USB configuration ID: 0".to_string());
+        }
         Ok(Self {
             fd,
             claimed_interfaces: claimed_interfaces.into(),
+            configuration_id,
+            unavailable_feedback_interfaces: unavailable_feedback_interfaces.into(),
             vendor_id,
             product_id,
             product_name,
@@ -100,6 +109,8 @@ impl AndroidDirectUsbDevice {
     fn info(&self) -> DeviceInfo {
         let mut info = DeviceInfo::new(self.vendor_id, self.product_id, self.product_name.clone())
             .with_claimed_interfaces(self.claimed_interfaces.to_vec());
+        info.configuration_id = Some(self.configuration_id);
+        info.unavailable_feedback_interfaces = self.unavailable_feedback_interfaces.to_vec();
         if let Some(name) = &self.device_name {
             info = info.with_device_name(name.clone());
         }
@@ -278,7 +289,9 @@ pub fn wait_for_android_usb_session_stop(timeout: Duration) -> bool {
         if let Some(_gate) = SESSION_GATE.try_lock() {
             if !is_session_active() {
                 complete_pending_clear_locked();
-                return true;
+                return usbdac_core::Dac::await_usb_retirement(
+                    timeout.saturating_sub(started_at.elapsed()),
+                );
             }
         }
         if started_at.elapsed() >= timeout {
@@ -925,10 +938,14 @@ fn create_backend(
 }
 
 /// Records a refusal from the library and returns the message the engine gets.
-/// An implicit-feedback DAC is refused here like any DAC that cannot carry the
-/// request: the engine falls back to Android-managed output.
+/// An unusable feedback route is refused like any format the DAC cannot carry:
+/// the engine falls back to Android-managed output.
 fn refuse(error: &Error) -> String {
-    let message = format!("USB direct refused: {error}");
+    let message = if matches!(error, Error::ImplicitFeedbackUnsupported) {
+        format!("USB direct refused: {}: no usable compatible implicit feedback source for the requested format", error.code())
+    } else {
+        format!("USB direct refused: {error}")
+    };
     dev_eprintln!("[USB] {message}");
     record_refusal(&message);
     message

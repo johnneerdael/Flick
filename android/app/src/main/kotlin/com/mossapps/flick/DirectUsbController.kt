@@ -805,10 +805,43 @@ class DirectUsbController(private val appContext: Context) {
                 return false
             }
             val registration = DirectUsbConnection(device, connection)
+            var selectedConfiguration: android.hardware.usb.UsbConfiguration? = null
             val registered = registration.claims.register(
-                selectInterfaces = { directUsbPlaybackInterfaces(connection, device) },
+                selectInterfaces = {
+                    val configuration = directUsbActiveConfiguration(connection, device)
+                    selectedConfiguration = configuration
+                    directUsbPlaybackInterfaces(configuration, device)
+                },
                 registerNative = { interfaces ->
-                    val ids = interfaces.map { it.id }.toIntArray()
+                    val configuration = selectedConfiguration ?: error("USB configuration was not selected")
+                    val preflight = nativeDirectUsbFeedbackPreflight(
+                        fileDescriptor, device.vendorId, device.productId, registration.productName,
+                        interfaces.map { it.id }.toIntArray(),
+                    ) ?: throw DirectUsbClaimException("Could not identify USB feedback interfaces for $deviceName.")
+                    if (preflight.isEmpty() || preflight[0] != configuration.id ||
+                        preflight.any { it !in 0..255 } || preflight[0] == 0
+                    ) {
+                        throw DirectUsbClaimException("USB configuration changed during feedback preflight for $deviceName.")
+                    }
+                    if (directUsbActiveConfiguration(connection, device).id != configuration.id) {
+                        throw DirectUsbClaimException("USB configuration changed before feedback claims for $deviceName.")
+                    }
+                    val heldIds = interfaces.map { it.id }.toSet()
+                    val captureInterfaces = (0 until configuration.interfaceCount).map(configuration::getInterface)
+                        .filter { it.interfaceClass == UsbConstants.USB_CLASS_AUDIO && it.interfaceSubclass == 0x02 }
+                        .groupBy { it.id }
+                    val unavailable = mutableListOf<Int>()
+                    val optional = preflight.drop(1).distinct().filter { it !in heldIds }.mapNotNull { id ->
+                        val alternates = captureInterfaces[id].orEmpty()
+                        val candidate = alternates.firstOrNull { it.alternateSetting == 0 } ?: alternates.firstOrNull()
+                        if (candidate == null) unavailable += id
+                        candidate
+                    }
+                    unavailable += registration.claims.claimOptional(optional).map { it.id }
+                    if (unavailable.isNotEmpty()) {
+                        Log.w("UAC2", "[USB] Optional feedback interfaces unavailable: $unavailable")
+                    }
+                    val ids = registration.claims.successfulClaims().map { it.id }.toIntArray()
                     nativeRegisterRustDirectUsbDevice(
                         fileDescriptor,
                         device.vendorId,
@@ -816,6 +849,8 @@ class DirectUsbController(private val appContext: Context) {
                         registration.productName,
                         deviceName,
                         ids,
+                        configuration.id,
+                        unavailable.toIntArray(),
                     ).also { accepted ->
                         if (accepted) {
                             Log.i("UAC2", "[USB] Force-claimed interfaces ${ids.toList()} for $deviceName")
@@ -904,10 +939,10 @@ class DirectUsbController(private val appContext: Context) {
         )
     }
 
-    private fun directUsbPlaybackInterfaces(
+    private fun directUsbActiveConfiguration(
         connection: UsbDeviceConnection,
         device: UsbDevice,
-    ): List<UsbInterface> {
+    ): android.hardware.usb.UsbConfiguration {
         val configurations = (0 until device.configurationCount).map(device::getConfiguration)
         val configuration = configurations.singleOrNull() ?: run {
             val value = ByteArray(1)
@@ -918,6 +953,13 @@ class DirectUsbController(private val appContext: Context) {
                 ?: throw DirectUsbClaimException("Could not read the active USB configuration for ${device.deviceName}.")
         }
 
+        return configuration
+    }
+
+    private fun directUsbPlaybackInterfaces(
+        configuration: android.hardware.usb.UsbConfiguration,
+        device: UsbDevice,
+    ): List<UsbInterface> {
         val audioInterfaces = (0 until configuration.interfaceCount)
             .map(configuration::getInterface)
             .filter { it.interfaceClass == UsbConstants.USB_CLASS_AUDIO }
@@ -1878,6 +1920,14 @@ class DirectUsbController(private val appContext: Context) {
         }
     }
 
+    private external fun nativeDirectUsbFeedbackPreflight(
+        fd: Int,
+        vendorId: Int,
+        productId: Int,
+        productName: String,
+        claimedInterfaces: IntArray,
+    ): IntArray?
+
     private external fun nativeRegisterRustDirectUsbDevice(
         fd: Int,
         vendorId: Int,
@@ -1885,6 +1935,8 @@ class DirectUsbController(private val appContext: Context) {
         productName: String,
         deviceName: String?,
         claimedInterfaces: IntArray,
+        configurationId: Int,
+        unavailableFeedbackInterfaces: IntArray,
     ): Boolean
     private external fun nativeSetRustDirectUsbPlaybackFormat(
         sampleRate: Int,

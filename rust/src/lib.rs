@@ -16,7 +16,7 @@ use std::{ffi::c_void, sync::OnceLock};
 #[cfg(target_os = "android")]
 use jni::{
     objects::{Global, JIntArray, JObject, JString},
-    sys::{jboolean, jdouble, jint, jstring},
+    sys::{jboolean, jdouble, jint, jintArray, jstring},
     JNIEnv, JavaVM,
 };
 
@@ -164,6 +164,71 @@ fn init_rust_android_context<'local>(mut env: JNIEnv<'local>, context: JObject<'
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeDirectUsbFeedbackPreflight(
+    mut env: JNIEnv<'_>,
+    _controller: JObject<'_>,
+    fd: jint,
+    vendor_id: jint,
+    product_id: jint,
+    product_name: JString<'_>,
+    claimed_interfaces: JIntArray<'_>,
+) -> jintArray {
+    env.with_env(|env| -> jni::errors::Result<jintArray> {
+        let count = claimed_interfaces.len(env)?;
+        if fd < 0
+            || !(0..=65535).contains(&vendor_id)
+            || !(0..=65535).contains(&product_id)
+            || !(1..=256).contains(&count)
+        {
+            return Ok(std::ptr::null_mut());
+        }
+        let mut ids = vec![0; count];
+        claimed_interfaces.get_region(env, 0, &mut ids)?;
+        let Ok(ids) = ids
+            .into_iter()
+            .map(u8::try_from)
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return Ok(std::ptr::null_mut());
+        };
+        let name = product_name.try_to_string(env)?;
+        let info = usbdac_core::DeviceInfo::new(vendor_id as u16, product_id as u16, name)
+            .with_claimed_interfaces(ids);
+        match usbdac_core::Dac::feedback_preflight(fd, &info) {
+            Ok((configuration, optional)) => {
+                let values: Vec<jint> = std::iter::once(configuration)
+                    .chain(optional)
+                    .map(jint::from)
+                    .collect();
+                let result = JIntArray::new(env, values.len())?;
+                result.set_region(env, 0, &values)?;
+                Ok(result.into_raw())
+            }
+            Err(error) => {
+                log::warn!("[USB] feedback claim preflight failed: {error}");
+                Ok(std::ptr::null_mut())
+            }
+        }
+    })
+    .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+#[cfg(all(target_os = "android", not(feature = "uac2")))]
+#[no_mangle]
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeDirectUsbFeedbackPreflight(
+    _env: JNIEnv<'_>,
+    _controller: JObject<'_>,
+    _fd: jint,
+    _vendor_id: jint,
+    _product_id: jint,
+    _product_name: JString<'_>,
+    _claimed_interfaces: JIntArray<'_>,
+) -> jintArray {
+    std::ptr::null_mut()
+}
+
+#[cfg(all(target_os = "android", feature = "uac2"))]
+#[no_mangle]
 pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeRegisterRustDirectUsbDevice(
     mut env: JNIEnv<'_>,
     _controller: JObject<'_>,
@@ -173,6 +238,8 @@ pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeRegiste
     product_name: JString<'_>,
     device_name: JString<'_>,
     claimed_interfaces: JIntArray<'_>,
+    configuration_id: jint,
+    unavailable_feedback_interfaces: JIntArray<'_>,
 ) -> jboolean {
     let read_string = |env: &mut jni::Env<'_>, value: JString<'_>| -> Option<String> {
         if jni::refs::Reference::is_null(&value) {
@@ -182,6 +249,25 @@ pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeRegiste
     };
 
     env.with_env(|env| -> jni::errors::Result<bool> {
+        if !(1..=255).contains(&configuration_id)
+            || !(0..=65535).contains(&vendor_id)
+            || !(0..=65535).contains(&product_id)
+        {
+            return Ok(false);
+        }
+        let unavailable_count = unavailable_feedback_interfaces.len(env)?;
+        if unavailable_count > 256 {
+            return Ok(false);
+        }
+        let mut unavailable = vec![0; unavailable_count];
+        unavailable_feedback_interfaces.get_region(env, 0, &mut unavailable)?;
+        let Ok(unavailable) = unavailable
+            .into_iter()
+            .map(u8::try_from)
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return Ok(false);
+        };
         let product_name =
             read_string(env, product_name).unwrap_or_else(|| "USB Audio Device".to_string());
         let device_name = read_string(env, device_name);
@@ -206,6 +292,8 @@ pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeRegiste
             product_name,
             device_name,
             interface_ids,
+            configuration_id as u8,
+            unavailable,
         ) {
             Ok(device) => device,
             Err(error) => {
@@ -239,6 +327,8 @@ pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeRegiste
     _product_name: JString<'_>,
     _device_name: JString<'_>,
     _claimed_interfaces: JIntArray<'_>,
+    _configuration_id: jint,
+    _unavailable_feedback_interfaces: JIntArray<'_>,
 ) -> jboolean {
     false
 }

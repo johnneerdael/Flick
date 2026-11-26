@@ -2771,8 +2771,9 @@ dependencies = [
 
 [[package]]
 name = "usbdac-core"
-version = "0.1.0-alpha.5"
-source = "git+https://github.com/johnneerdael/android-usbdac?rev=51713522e61c97f63f24d05db9a371b02a5c07d9#51713522e61c97f63f24d05db9a371b02a5c07d9"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3548d32d6a711ffcacdf03349a0eba0359cbfe76c75b132ef82b8dab8215dc64"
 dependencies = [
  "crossbeam-channel",
  "libc",
