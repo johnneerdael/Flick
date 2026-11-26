@@ -11,6 +11,8 @@
 ### USB DAC volume
 - **Live DAC slider** — dragging a hardware-volume slider now moves the DAC as you drag. One write is in flight at a time and the newest value replaces any queued one, so the DAC ends on the final position; the thumb stays under your finger until that write is read back. All existing safety pauses and route checks still run on every write.
 - **Audible slider range** — above 0 %, the slider now spans the DAC's range from −80 dB (or its minimum, if higher) to its maximum, instead of the full range down to a typical −127 dB; 0 % is still the DAC minimum. DACs whose minimum is above −80 dB are unchanged.
+- **Phone volume keys drive the DAC** — over direct USB with the DAC's hardware volume as the authority, the volume keys (screen on) and the media-session volume (screen off) step the DAC by 1/16 of the slider per press, an even number of dB at every level; casting keeps priority. The keys stay with the DAC while a paused session has its stream closed.
+- **Idle DAC** — after 30 s of pause on the direct USB path the stream is closed while Flick keeps the DAC claimed; play, volume changes and mute reopen it first. A volume write in progress is never cut off by it.
 - **Saved DAC levels keep their loudness** — a level saved before this change meant a different attenuation, so it is converted to the same dB and still limited by the low startup default, never replayed as the same percentage.
 
 ## 0.23.3-beta.5 (2026-11-20)

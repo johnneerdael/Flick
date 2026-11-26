@@ -129,16 +129,28 @@ bool shouldRouteVolumeKeysToDac({
   required bool isCasting,
 }) => tier == VolumeTier.hardware && isDirectUsbPath && !isCasting;
 
-/// One volume-key step from [current]. Relative, not snapped to a grid: a DAC
-/// that quantises the request would otherwise land below the grid point and
-/// swallow every press in the same direction.
+/// One volume-key step from [current]. The slider is linear in the DAC's dB
+/// range (`normalize_volume` in rust/src/uac2/volume_control.rs), so one step
+/// is the same number of dB everywhere above the -80 dB floor: 1/[steps] of the
+/// span, 5 dB on a DAC that reaches -80 dB. Position 0 is the DAC minimum.
+///
+/// Relative, not snapped to a grid: a DAC that quantises the request would
+/// otherwise land below the grid point and swallow every press in the same
+/// direction. Within half a step of an end a press lands on the end, so a
+/// quantised readback cannot stretch the way across to more than [steps]
+/// presses.
 double stepDacVolume(
   double current,
   int direction, {
   int steps = dacVolumeKeySteps,
 }) {
   if (!current.isFinite) return current;
-  return (current + direction.sign / steps).clamp(0.0, 1.0).toDouble();
+  final step = direction.sign / steps;
+  if (step == 0) return current;
+  final next = current + step;
+  if (next <= 0.5 / steps) return 0.0;
+  if (next >= 1.0 - 0.5 / steps) return 1.0;
+  return next.clamp(0.0, 1.0).toDouble();
 }
 
 /// A change the user should see right now, e.g. after a volume key. Equality
@@ -765,6 +777,9 @@ class PlayerService {
   bool _usbIdleReleased = false;
   Future<void>? _usbIdleReleaseInFlight;
   Future<void>? _usbIdleReopenInFlight;
+  // DAC control writes (volume, mute) in progress. They need the stream open,
+  // so the idle release waits for the last one to finish.
+  int _usbHardwareControlHolds = 0;
 
   // State Notifiers
   final ValueNotifier<Song?> currentSongNotifier = _MutableValueNotifier(null);
@@ -1045,7 +1060,7 @@ class PlayerService {
       unawaited(_uac2Service.setAndroidUsbReconnectTarget(null, cancel: true));
     }
     _cancelUsbIdleReleaseTimer();
-    _usbIdleReleased = false;
+    _setUsbIdleReleased(false);
     _usbAttachEngage = null;
     _usbDacVolumeRestore.reset();
     _usbHardwareVolumeReadyFor = null;
@@ -2832,7 +2847,10 @@ class PlayerService {
       LatestValueWriter<double>(_setHardwareVolume);
 
   Future<void> _setHardwareVolume(double volume) async {
-    await _reopenUsbEngineFromIdle();
+    await _withUsbHardwareControl(() => _applyHardwareVolume(volume));
+  }
+
+  Future<void> _applyHardwareVolume(double volume) async {
     final directUsb = _isDirectUsbPath;
     final device = _uac2Service.currentDeviceStatus?.device;
     final generation = _usbDacVolumeRestore.connectionGeneration;
@@ -5811,7 +5829,7 @@ class PlayerService {
 
   Future<void> _disposeUsbEngine() async {
     _cancelUsbIdleReleaseTimer();
-    _usbIdleReleased = false;
+    _setUsbIdleReleased(false);
     if (!_rustAudioService.isInitialized) return;
 
     _debugLog('[Engine] Disposing Rust engine');
@@ -6937,6 +6955,46 @@ class PlayerService {
     _usbIdleReleaseSongId = null;
   }
 
+  /// Marks the stream closed (or reopened) and tells the route status to keep
+  /// the DAC's last volume view while it is closed. The service is only touched
+  /// on a change, so sessions that never idle-release never reach it.
+  void _setUsbIdleReleased(bool released) {
+    if (_usbIdleReleased == released) return;
+    _usbIdleReleased = released;
+    _uac2Service.holdsReleasedStreamVolume = released;
+  }
+
+  /// Runs a DAC control write ([apply]) with the stream open. A stream closed by
+  /// the idle release is reopened first, and stays open until the write is
+  /// done; the countdown to close it again then starts over. Returns null when
+  /// the stream could not be reopened, in which case nothing was written.
+  Future<T?> _withUsbHardwareControl<T>(Future<T> Function() apply) async {
+    _usbHardwareControlHolds++;
+    try {
+      try {
+        await _reopenUsbEngineFromIdle();
+      } catch (error) {
+        const reason = 'could not reopen the direct USB stream';
+        _debugLog('[VolFlow] DAC write skipped: $reason: $error');
+        AppLog.instance.add('[VolFlow] DAC write skipped: $reason');
+        return null;
+      }
+      // Still closed: the route left direct USB, which has its own volume path.
+      if (_usbIdleReleased) return null;
+      return await apply();
+    } finally {
+      _endUsbHardwareControlHold(restartCountdown: true);
+    }
+  }
+
+  /// Ends one hold of the stream. The last one lets the idle release run again:
+  /// a release that came due meanwhile gave way to it and has to be re-armed.
+  void _endUsbHardwareControlHold({required bool restartCountdown}) {
+    if (--_usbHardwareControlHolds > 0) return;
+    if (restartCountdown) _cancelUsbIdleReleaseTimer();
+    _syncUsbIdleReleaseTimer();
+  }
+
   /// Closes the isochronous stream of a session that stayed paused, so no
   /// transfers run and the DAC can idle. The native idle lock keeps the DAC
   /// claimed, which keeps Android's own USB audio driver off it and leaves the
@@ -6960,9 +7018,12 @@ class PlayerService {
             !engine.isOutputReleased)) {
       return;
     }
+    // A DAC write needs the stream: closing it under the write would fail the
+    // write and trip the volume safety stop. The write re-arms the countdown.
+    if (_usbHardwareControlHolds > 0) return;
     // Freeze the volume tier first: the DAC's hardware control disappears with
     // the stream and must not read as lost authority while nothing plays.
-    _usbIdleReleased = true;
+    _setUsbIdleReleased(true);
     _stopHwVolumeHealthTimer();
     final release = engine.releaseOutput().catchError((Object error) {
       _debugLog('[Engine] Direct USB idle release failed: $error');
@@ -6974,7 +7035,7 @@ class PlayerService {
       _usbIdleReleaseInFlight = null;
     }
     if (!released) {
-      _usbIdleReleased = false;
+      _setUsbIdleReleased(false);
       return;
     }
     final message =
@@ -7020,7 +7081,7 @@ class PlayerService {
       isPlaying: false,
       hasActiveSong: song != null,
     );
-    _usbIdleReleased = false;
+    _setUsbIdleReleased(false);
     await _applyRustPlaybackProcessingPolicy(
       AudioEngineType.usbDacExperimental,
       song: song,
@@ -7825,6 +7886,12 @@ class PlayerService {
     }
   }
 
+  /// Mutes or unmutes the DAC itself, independent of its volume level. A
+  /// stream closed by the idle release is reopened first, like a level change.
+  /// Returns whether the DAC took and confirmed the new state.
+  Future<bool> setHardwareMute(bool muted) async =>
+      await _withUsbHardwareControl(() => _uac2Service.setMute(muted)) ?? false;
+
   // ==================== Volume keys ====================
 
   /// True while the phone's volume keys, and the media session's remote
@@ -8580,11 +8647,21 @@ class PlayerService {
   }
 
   Future<void> _checkHwVolumeHealth() async {
-    if (volumeTierNotifier.value != VolumeTier.hardware) return;
+    if (volumeTierNotifier.value != VolumeTier.hardware || _usbIdleReleased) {
+      return;
+    }
     final device = _uac2Service.currentDeviceStatus?.device;
     final generation = _usbDacVolumeRestore.connectionGeneration;
     final revision = _usbHardwareVolumeRevision;
-    final healthy = await _uac2Service.verifyHardwareVolumeHealth();
+    // The readback needs the stream like a write does; a release that closed it
+    // under the read would look like a failed control.
+    _usbHardwareControlHolds++;
+    final bool? healthy;
+    try {
+      healthy = await _uac2Service.verifyHardwareVolumeHealth();
+    } finally {
+      _endUsbHardwareControlHold(restartCountdown: false);
+    }
     if (generation != _usbDacVolumeRestore.connectionGeneration ||
         revision != _usbHardwareVolumeRevision ||
         !_sameUsbVolumeDevice(device, _uac2Service.currentDeviceStatus?.device)) {

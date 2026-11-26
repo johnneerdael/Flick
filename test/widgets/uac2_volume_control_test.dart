@@ -63,6 +63,14 @@ class _TestPlayer extends Fake implements PlayerService {
   final writes = <double>[];
   bool acceptWrites = true;
 
+  /// Mute goes through the player, which reopens an idle-released stream first;
+  /// the test status stands in for the DAC.
+  Future<bool> Function(bool muted)? onMute;
+
+  @override
+  Future<bool> setHardwareMute(bool muted) async =>
+      await onMute?.call(muted) ?? false;
+
   /// Holds every write until completed, like a DAC that answers slowly.
   Completer<void>? writeGate;
 
@@ -105,6 +113,7 @@ Future<void> _pumpControl(
   double textScale = 1.0,
 }) async {
   final buttonKey = GlobalKey();
+  player.onMute = status.setMute;
   await tester.pumpWidget(
     ProviderScope(
       overrides: [

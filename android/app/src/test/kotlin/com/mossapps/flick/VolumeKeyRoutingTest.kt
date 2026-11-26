@@ -3,6 +3,8 @@ package com.mossapps.flick
 import android.media.AudioManager
 import android.view.KeyEvent
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VolumeKeyRoutingTest {
@@ -29,6 +31,24 @@ class VolumeKeyRoutingTest {
         assertEquals(0, volumeKeyDirection(KeyEvent.KEYCODE_VOLUME_MUTE))
         assertEquals(0, volumeKeyDirection(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
         assertEquals(0, volumeKeyDirection(KeyEvent.KEYCODE_BACK))
+    }
+
+    @Test
+    fun theDacTakesTheKeysWhileItIsClaimedWhetherOrNotAStreamIsOpen() {
+        // A stream closed by the idle release has no volume control but is still claimed.
+        assertTrue(shouldConsumeDacVolumeKey(direction = 1, dacKeysCaptured = true, dacClaimed = true))
+        assertTrue(shouldConsumeDacVolumeKey(direction = -1, dacKeysCaptured = true, dacClaimed = true))
+    }
+
+    @Test
+    fun keysFallThroughWhenDartDoesNotOwnThemOrTheDacIsGone() {
+        assertFalse(shouldConsumeDacVolumeKey(direction = 1, dacKeysCaptured = false, dacClaimed = true))
+        assertFalse(shouldConsumeDacVolumeKey(direction = 1, dacKeysCaptured = true, dacClaimed = false))
+    }
+
+    @Test
+    fun keysOtherThanVolumeUpAndDownAreNeverConsumed() {
+        assertFalse(shouldConsumeDacVolumeKey(direction = 0, dacKeysCaptured = true, dacClaimed = true))
     }
 
     @Test

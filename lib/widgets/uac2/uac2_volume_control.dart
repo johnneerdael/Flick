@@ -78,7 +78,7 @@ class _Uac2VolumeControlState extends ConsumerState<Uac2VolumeControl> {
         final muted = ref.read(uac2DeviceStatusProvider)?.muted;
         if (muted != null) {
           // Mute must not overwrite the DAC's independent volume level.
-          await ref.read(uac2DeviceStatusProvider.notifier).setMute(!muted);
+          await playerService.setHardwareMute(!muted);
         }
       } else if (playerService.currentVolume > 0.0) {
         _preMuteVolume = playerService.currentVolume.clamp(0.01, 1.0);

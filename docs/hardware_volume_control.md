@@ -135,6 +135,44 @@ the verified restore before playback and resume, with connection-generation and
 device checks. A recovery write waits for the safety pause to finish; failed
 pause falls back to stopping transport. No alternate audio output is auto-started.
 
+## Volume keys and media-session volume
+
+While the DAC's hardware volume is the authority on direct USB and nothing is
+being cast (`PlayerService.dacVolumeKeysActive`), the phone's volume keys and the
+media session's remote volume drive the DAC instead of `STREAM_MUSIC`, which does
+not reach a libusb stream. In the foreground `MainActivity.dispatchKeyEvent`
+consumes the keys and Dart steps the DAC through `setVolume`, so every gate above
+applies. In the background the media session offers the DAC as its remote volume;
+a cast target keeps priority over it.
+
+One key press is 1/16 of the slider (`stepDacVolume`). The slider is linear in
+the DAC's dB range above the -80 dB floor, so a press is the same number of dB
+at every level: 5 dB on a DAC that reaches -80 dB, `span / 16` on one whose range
+is smaller. Position 0 is the DAC minimum, so the first press from silence lands
+one step above the floor. A press within half a step of an end lands on it, so a
+DAC that quantises its readback still crosses the whole range in 16 presses.
+
+## Closing the stream while paused
+
+After 30 s of continuous pause on the libusb direct path the isochronous stream
+is closed and Flick keeps the DAC claimed (the native idle lock), so Android's
+USB audio driver cannot take it. Native clears the DAC's volume control with the
+stream, so while it is closed:
+
+- The tier is frozen and `Uac2Service` keeps the last hardware-volume view of the
+  same registered DAC (`holdHardwareVolumeView`): level, mute state and writable
+  flag stay what they were, and a route refresh cannot read the gap as lost
+  volume authority. The volume UI, the keys and the media-session volume therefore
+  do not flip to the system volume and back.
+- The volume keys stay consumed while the DAC is claimed
+  (`shouldConsumeDacVolumeKey`), not only while its control exists.
+- Every DAC write (slider, keys, media-session volume, mute) goes through
+  `PlayerService._withUsbHardwareControl`: it reopens the stream first, holds the
+  idle release off until the write has been read back, then starts the 30 s again.
+  The writes themselves are still serialised and coalesced by `LatestValueWriter`,
+  so a drag across a reopen reopens once and ends on the newest level. If the
+  stream cannot be reopened nothing is written and the level shown is unchanged.
+
 ## Notification Ducking
 
 `attenuateSoftwareVolume` multiplies the effective gain by 0.2 (approximately

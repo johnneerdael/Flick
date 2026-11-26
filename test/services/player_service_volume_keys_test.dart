@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flick/core/utils/volume_curve.dart';
 import 'package:flick/data/database.dart';
 import 'package:flick/models/audio_engine_type.dart';
 import 'package:flick/services/audio_session_manager.dart';
@@ -76,6 +78,46 @@ Uac2DeviceStatus _status({
   volume: volume,
   muted: muted,
 );
+
+/// A DAC volume range as the Rust slider mapping sees it (`normalize_volume`
+/// and `quantize_volume` in rust/src/uac2/volume_control.rs), in 1/256 dB.
+class _DacRange {
+  const _DacRange(this.minRaw, this.maxRaw, this.resolution);
+
+  final int minRaw;
+  final int maxRaw;
+  final int resolution;
+
+  int get floorRaw => maxRaw > usbDacVolumeFloorRaw
+      ? math.max(minRaw, usbDacVolumeFloorRaw)
+      : minRaw;
+
+  /// The highest value the DAC can be set to.
+  int get topRaw => minRaw + (maxRaw - minRaw) ~/ resolution * resolution;
+
+  double normalize(int raw) =>
+      ((raw - floorRaw) / (maxRaw - floorRaw)).clamp(0.0, 1.0).toDouble();
+
+  int quantize(double volume) {
+    if (volume <= 0.0) return minRaw;
+    final target = floorRaw + volume.clamp(0.0, 1.0) * (maxRaw - floorRaw);
+    final firstStep = floorRaw > minRaw
+        ? (floorRaw - minRaw) ~/ resolution + 1
+        : 0;
+    final lastStep = (maxRaw - minRaw) ~/ resolution;
+    final index = ((target - minRaw) / resolution).round().clamp(
+      firstStep,
+      lastStep,
+    );
+    return minRaw + index * resolution;
+  }
+
+  /// One key press: the next level the DAC reads back.
+  double press(double level, int direction) =>
+      normalize(quantize(stepDacVolume(level, direction)));
+
+  double dbOf(double level) => (floorRaw + level * (maxRaw - floorRaw)) / 256;
+}
 
 class _Session extends Fake implements AudioSessionManager {
   _Session(AudioEngineType initial)
@@ -213,9 +255,86 @@ void main() {
       }
     });
 
+    test('a press next to an end lands on it', () {
+      // Quantised readbacks sit just off the 1/16 grid.
+      expect(stepDacVolume(0.0640, -1), 0.0);
+      expect(stepDacVolume(0.0900, -1), 0.0);
+      expect(stepDacVolume(0.9100, 1), 1.0);
+      expect(stepDacVolume(0.9000, 1), closeTo(0.9625, 1e-12));
+      expect(stepDacVolume(0.1, -1), closeTo(0.0375, 1e-12));
+    });
+
     test('ignores a zero direction and a non-finite level', () {
       expect(stepDacVolume(0.4, 0), 0.4);
       expect(stepDacVolume(double.nan, 1).isNaN, isTrue);
+    });
+  });
+
+  group('stepDacVolume on the floored DAC curve', () {
+    // -127 dB..0 in 1/256 dB, -127.5 dB..0 in whole dB (a lattice that misses
+    // the floor), -40..0 dB (a minimum above the floor), -96..-6 dB in 1.5 dB.
+    const dacs = {
+      'fine -127..0 dB': _DacRange(-127 * 256, 0, 1),
+      'coarse -127.5..0 dB': _DacRange(-127 * 256 - 128, 0, 256),
+      'narrow -40..0 dB': _DacRange(-40 * 256, 0, 128),
+      'offset -96..-6 dB': _DacRange(-96 * 256, -6 * 256, 384),
+    };
+
+    for (final entry in dacs.entries) {
+      final dac = entry.value;
+      final spanDb = (dac.maxRaw - dac.floorRaw) / 256;
+      final resolutionDb = dac.resolution / 256;
+
+      test('${entry.key}: sixteen presses reach both ends', () {
+        var level = dac.normalize(dac.quantize(0.0));
+        expect(level, 0.0);
+        for (var press = 0; press < dacVolumeKeySteps; press++) {
+          level = dac.press(level, 1);
+        }
+        expect(level, dac.normalize(dac.topRaw));
+        for (var press = 0; press < dacVolumeKeySteps; press++) {
+          level = dac.press(level, -1);
+        }
+        expect(level, 0.0);
+      });
+
+      test('${entry.key}: every press is the same number of dB', () {
+        var level = dac.normalize(dac.quantize(0.0));
+        var previousDb = dac.dbOf(level);
+        for (var press = 1; press < dacVolumeKeySteps; press++) {
+          level = dac.press(level, 1);
+          final db = dac.dbOf(level);
+          if (press > 1) {
+            // Quantised to the DAC's lattice, never more than one lattice step off.
+            expect(db - previousDb, closeTo(spanDb / 16, resolutionDb));
+          }
+          previousDb = db;
+        }
+        expect(spanDb / 16, lessThanOrEqualTo(5.0)); // At most 5 dB a press.
+        expect(spanDb / 16, greaterThan(0.0));
+      });
+
+      test('${entry.key}: a press never stalls below the top', () {
+        var level = dac.normalize(dac.quantize(0.0));
+        for (var press = 0; press < dacVolumeKeySteps - 1; press++) {
+          final next = dac.press(level, 1);
+          expect(next, greaterThan(level), reason: 'press $press from $level');
+          level = next;
+        }
+        for (var press = 0; press < dacVolumeKeySteps - 1; press++) {
+          final next = dac.press(level, -1);
+          expect(next, lessThan(level), reason: 'press $press from $level');
+          level = next;
+        }
+      });
+    }
+
+    test('the first press from the minimum lands one step above the floor', () {
+      const dac = _DacRange(-127 * 256, 0, 1);
+      final level = dac.press(0.0, 1);
+      expect(dac.dbOf(level), closeTo(-75.0, 1 / 256));
+      // And a step down from there is the DAC minimum again, not a stall.
+      expect(dac.press(level, -1), 0.0);
     });
   });
 

@@ -26,6 +26,19 @@ internal fun volumeKeyDirection(keyCode: Int): Int = when (keyCode) {
 }
 
 /**
+ * Whether the activity consumes a volume key for the DAC. Dart's flag says the
+ * DAC owns the keys; the claim says the DAC is still Flick's. The claim, not the
+ * DAC's volume control, because that control only exists while a stream is open
+ * and a stream closed by the idle release must keep the keys on the DAC rather
+ * than let them fall through to the system volume.
+ */
+internal fun shouldConsumeDacVolumeKey(
+    direction: Int,
+    dacKeysCaptured: Boolean,
+    dacClaimed: Boolean,
+): Boolean = direction != 0 && dacKeysCaptured && dacClaimed
+
+/**
  * Step for a remote-volume adjust request. Mute, unmute, toggle-mute and
  * ADJUST_SAME are not a level change, so the DAC volume is left alone.
  */

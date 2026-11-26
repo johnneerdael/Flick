@@ -5779,7 +5779,9 @@ class MainActivity: FlutterActivity() {
     // Otherwise the keys fall through exactly as before.
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val direction = volumeKeyDirection(event.keyCode)
-        if (direction != 0 && dacVolumeKeysCaptured && hasDirectUsbHardwareVolume()) {
+        // The claim, not hasDirectUsbHardwareVolume(): the DAC's volume control
+        // is gone while a stream closed by the idle release is not running.
+        if (shouldConsumeDacVolumeKey(direction, dacVolumeKeysCaptured, activeDirectUsbDeviceName != null)) {
             if (event.action == KeyEvent.ACTION_DOWN) {
                 playerChannel?.invokeMethod("adjustDacVolume", mapOf("direction" to direction))
             }

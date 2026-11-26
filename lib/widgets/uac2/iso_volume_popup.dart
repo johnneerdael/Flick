@@ -159,7 +159,7 @@ class _IsoVolumePopupOverlayState extends ConsumerState<_IsoVolumePopupOverlay>
       if (playerService.isHardwareVolumeAuthority) {
         final muted = ref.read(uac2DeviceStatusProvider)?.muted;
         if (muted != null) {
-          await ref.read(uac2DeviceStatusProvider.notifier).setMute(!muted);
+          await playerService.setHardwareMute(!muted);
         }
       } else if (playerService.currentVolume > 0.0) {
         _preMuteVolume = playerService.currentVolume.clamp(0.01, 1.0);
