@@ -532,6 +532,26 @@ pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeGetRustAudioDe
 
 #[cfg(all(target_os = "android", feature = "uac2"))]
 #[no_mangle]
+pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectUsbOriginalVolumeAction(
+    _env: JNIEnv<'_>,
+    _activity: JObject<'_>,
+    action: jint,
+) -> jboolean {
+    u32::try_from(action).is_ok_and(crate::uac2::set_android_usb_original_volume_action)
+}
+
+#[cfg(all(target_os = "android", not(feature = "uac2")))]
+#[no_mangle]
+pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeSetRustDirectUsbOriginalVolumeAction(
+    _env: JNIEnv<'_>,
+    _activity: JObject<'_>,
+    _action: jint,
+) -> jboolean {
+    false
+}
+
+#[cfg(all(target_os = "android", feature = "uac2"))]
+#[no_mangle]
 pub extern "system" fn Java_com_mossapps_flick_MainActivity_nativeClearRustDirectUsbPlayback(
     _env: JNIEnv<'_>,
     _activity: JObject<'_>,

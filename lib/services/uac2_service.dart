@@ -1046,7 +1046,9 @@ class Uac2Service {
       return false;
     }
 
-    await releaseAndroidDirectUsbRuntime();
+    // Flick claims the DAC again below: Android must not get it in between, and
+    // the level it had before Flick changed it stays remembered.
+    await releaseAndroidDirectUsbRuntime(handBack: false);
     final selected = await selectDevice(resolvedDevice);
     if (!selected) {
       return false;
@@ -1087,7 +1089,14 @@ class Uac2Service {
     return true;
   }
 
-  Future<void> releaseAndroidDirectUsbRuntime() async {
+  /// Stops direct USB and lets go of the DAC's interfaces.
+  ///
+  /// With [handBack] (the default) Android's own USB audio driver gets the DAC
+  /// afterwards, so native first writes back the level the DAC had before Flick
+  /// first changed it (best effort, and never to a DAC that has been unplugged).
+  /// Pass false only when Flick claims the DAC again straight away: nothing is
+  /// written, and the remembered level carries over to the next claim.
+  Future<void> releaseAndroidDirectUsbRuntime({bool handBack = true}) async {
     if (!Platform.isAndroid) {
       return;
     }
@@ -1101,7 +1110,9 @@ class Uac2Service {
       devLog('Uac2Service.clearDirectUsbPlaybackFormat failed: $e');
     }
     try {
-      await _channel.invokeMethod<bool>('deactivateDirectUsb');
+      await _channel.invokeMethod<bool>('deactivateDirectUsb', {
+        'handBack': handBack,
+      });
     } catch (e) {
       devLog('Uac2Service.deactivateDirectUsb failed: $e');
     }
@@ -1233,7 +1244,9 @@ Future<void> stopPriorityAnchor() async {
       if (Platform.isAndroid) {
         await _setAndroidDirectUsbPlaybackActive(false);
         try {
-          await _channel.invokeMethod<bool>('deactivateDirectUsb');
+          await _channel.invokeMethod<bool>('deactivateDirectUsb', {
+            'handBack': true,
+          });
         } catch (e) {
           devLog('Uac2Service.deactivateDirectUsb failed: $e');
         }
@@ -2407,7 +2420,16 @@ Future<void> stopPriorityAnchor() async {
     );
   }
 
+  /// Set while the player has closed the direct USB stream on purpose (idle
+  /// release) and still holds the DAC claim. The DAC's volume control is
+  /// discovered with the stream, so a route refresh in that gap reports it as
+  /// gone; [holdHardwareVolumeView] keeps the last view of it instead.
+  bool holdsReleasedStreamVolume = false;
+
   void _updateStatus(Uac2DeviceStatus? status) {
+    if (holdsReleasedStreamVolume) {
+      status = holdHardwareVolumeView(_currentDeviceStatus, status);
+    }
     if (status == null || status.state == Uac2State.error ||
         (_currentDeviceStatus?.directUsbRegistered == true &&
             !status.directUsbRegistered && status.state != Uac2State.connecting)) {
@@ -2545,6 +2567,36 @@ String? _androidRouteWarningMessage(
     case Uac2RouteType.unknown:
       return null;
   }
+}
+
+/// [next], with the hardware-volume view [previous] had when [next] is the same
+/// registered DAC reporting no volume control. Used while the stream is closed
+/// on purpose: the control is rediscovered when the stream reopens, and until
+/// then the volume UI, the volume keys and the media session volume should not
+/// see the DAC lose its volume authority.
+@visibleForTesting
+Uac2DeviceStatus? holdHardwareVolumeView(
+  Uac2DeviceStatus? previous,
+  Uac2DeviceStatus? next,
+) {
+  if (previous == null ||
+      next == null ||
+      previous.volumeMode != Uac2VolumeMode.hardware ||
+      next.volumeMode == Uac2VolumeMode.hardware ||
+      !previous.directUsbRegistered ||
+      !next.directUsbRegistered ||
+      (previous.device.deviceName?.isEmpty ?? true) ||
+      previous.device.deviceName != next.device.deviceName) {
+    return next;
+  }
+  return next.copyWith(
+    volumeMode: previous.volumeMode,
+    hasVolumeControl: previous.hasVolumeControl,
+    volumeControlWritable: previous.volumeControlWritable,
+    volume: previous.volume,
+    muted: previous.muted,
+    compatibilityNotice: previous.compatibilityNotice,
+  );
 }
 
 String? _deviceCompatibilityNotice({

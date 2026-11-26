@@ -66,6 +66,11 @@ Key details:
 - Transient handle does **not** claim/release the AudioControl interface — control transfers on endpoint 0 don't need claims on Android, and claiming could conflict with the streaming handle.
 - Resolution-aware quantization selects a supported raw dB step. Post-write
   readback must match the normalized quantized target within 1e-6.
+- The slider follows the finger: while it is dragged, `setVolume` hands every
+  value to `LatestValueWriter`, which keeps one DAC write in flight and lets the
+  newest value replace any queued one. Each write that runs still goes through
+  the full `_setHardwareVolume` gating, and the final value is always written.
+  The slider thumb holds the finger's value until that final write is read back.
 
 ### Tier 2: eligible PCM DSP without hardware authority
 
@@ -95,9 +100,21 @@ UI slider → player_service.setVolume()
 ## Safe Restoration and Authority Changes
 
 Hardware percentage is a position in the DAC's advertised dB range, not the
-software curve. Hardware and software levels are stored in separate per-device
-slots (`uac2_usb_device_volume_authorities`). Legacy untyped values remain
-available as software levels but cannot authorize a hardware restore.
+software curve. 0 is the DAC minimum (silence); above 0 the slider spans
+max(DAC minimum, -80 dB) to the DAC maximum, so a DAC reporting -127 dB does not
+spend most of the slider below audibility (`normalize_volume` /
+`quantize_volume` in `rust/src/uac2/volume_control.rs`; a DAC whose minimum is
+above -80 dB is unchanged). Hardware and software levels are stored in separate
+per-device slots (`uac2_usb_device_volume_authorities`). Legacy untyped values
+remain available as software levels but cannot authorize a hardware restore.
+
+A hardware level saved before the -80 dB floor was a fraction of the DAC's whole
+range, so the same number is now louder. Saved hardware levels carry
+`hardwareCurve: 2`; one without it is handed back as `legacyHardware`, never as
+`hardware`. The pre-playback restore converts it to the same attenuation from
+the DAC range in the Rust diagnostics (`legacyUsbDacVolumeToCurrent`), still
+capped by the low default and the current DAC readback, and saves the result in
+the current form. If the range is unavailable it falls back to the 40% default.
 
 A new DAC or ambiguous legacy record uses the existing 40% first-use default,
 without requiring a slider gesture. A lower current DAC readback is retained,
@@ -117,6 +134,44 @@ The native queued restore skips ambiguous levels and live playback. Dart awaits
 the verified restore before playback and resume, with connection-generation and
 device checks. A recovery write waits for the safety pause to finish; failed
 pause falls back to stopping transport. No alternate audio output is auto-started.
+
+## Volume keys and media-session volume
+
+While the DAC's hardware volume is the authority on direct USB and nothing is
+being cast (`PlayerService.dacVolumeKeysActive`), the phone's volume keys and the
+media session's remote volume drive the DAC instead of `STREAM_MUSIC`, which does
+not reach a libusb stream. In the foreground `MainActivity.dispatchKeyEvent`
+consumes the keys and Dart steps the DAC through `setVolume`, so every gate above
+applies. In the background the media session offers the DAC as its remote volume;
+a cast target keeps priority over it.
+
+One key press is 1/16 of the slider (`stepDacVolume`). The slider is linear in
+the DAC's dB range above the -80 dB floor, so a press is the same number of dB
+at every level: 5 dB on a DAC that reaches -80 dB, `span / 16` on one whose range
+is smaller. Position 0 is the DAC minimum, so the first press from silence lands
+one step above the floor. A press within half a step of an end lands on it, so a
+DAC that quantises its readback still crosses the whole range in 16 presses.
+
+## Closing the stream while paused
+
+After 30 s of continuous pause on the libusb direct path the isochronous stream
+is closed and Flick keeps the DAC claimed (the native idle lock), so Android's
+USB audio driver cannot take it. Native clears the DAC's volume control with the
+stream, so while it is closed:
+
+- The tier is frozen and `Uac2Service` keeps the last hardware-volume view of the
+  same registered DAC (`holdHardwareVolumeView`): level, mute state and writable
+  flag stay what they were, and a route refresh cannot read the gap as lost
+  volume authority. The volume UI, the keys and the media-session volume therefore
+  do not flip to the system volume and back.
+- The volume keys stay consumed while the DAC is claimed
+  (`shouldConsumeDacVolumeKey`), not only while its control exists.
+- Every DAC write (slider, keys, media-session volume, mute) goes through
+  `PlayerService._withUsbHardwareControl`: it reopens the stream first, holds the
+  idle release off until the write has been read back, then starts the 30 s again.
+  The writes themselves are still serialised and coalesced by `LatestValueWriter`,
+  so a drag across a reopen reopens once and ends on the newest level. If the
+  stream cannot be reopened nothing is written and the level shown is unchanged.
 
 ## Notification Ducking
 

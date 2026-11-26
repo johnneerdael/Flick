@@ -178,9 +178,15 @@ class _Usb extends Fake implements Uac2Service {
   int runtimeReleases = 0;
   int activations = 0;
 
+  /// The `handBack` of each release: true lets Android's own driver have the
+  /// DAC (native writes the DAC's original level back first), false means Flick
+  /// claims it again straight away.
+  final handBacks = <bool>[];
+
   @override
-  Future<void> releaseAndroidDirectUsbRuntime() async {
+  Future<void> releaseAndroidDirectUsbRuntime({bool handBack = true}) async {
     runtimeReleases++;
+    handBacks.add(handBack);
     status = status.copyWith(directUsbRegistered: false);
   }
 
@@ -503,6 +509,9 @@ void main() {
         'Android USB direct transfer failed: libusb_submit_transfer failed with code -4',
       );
       expect(usb.runtimeReleases, 1);
+      // Android's driver gets the DAC between the two claims: the level it had
+      // before Flick changed it is written back first (if it is still attached).
+      expect(usb.handBacks, [true]);
       expect(usb.freshQueries, [true]);
       expect(usb.activations, 1);
       expect(playback.starts, [(song: _song, position: const Duration(seconds: 19))]);
@@ -522,6 +531,13 @@ void main() {
       expect(playback.starts, [
         (song: _song, position: const Duration(seconds: 19)),
       ]);
+    });
+
+    test('staying on direct USB never hands the DAC back', () async {
+      await player.setAudioEnginePreference(AudioEnginePreference.isochronousUsb);
+      await player.reconcileVolumeForTesting();
+      expect(usb.runtimeReleases, 0);
+      expect(usb.handBacks, isEmpty);
     });
 
     test('an absent DAC is never reopened using its disconnected handle', () async {
@@ -1605,6 +1621,140 @@ void main() {
     expect(player.usbVolumeSafetyBlockedNotifier.value, isFalse);
     expect(rust.commands, [1.0]);
     expect(usb.writes, [0.4]);
+  });
+
+  test(
+    'a dragged hardware slider keeps one write in flight and ends on the newest value',
+    () async {
+      final usb = _Usb(hardware: true);
+      final rust = _Rust();
+      final player = _player(
+        AudioEngineType.usbDacExperimental,
+        usb,
+        rust: rust,
+      );
+      expect(await player.enableUsbDacBitPerfect(), isTrue);
+      usb.writes.clear();
+      final writeStarted = Completer<void>();
+      final write = Completer<void>();
+      usb.volumeWriteStarted = writeStarted;
+      usb.volumeWrite = write;
+
+      final drag = [
+        for (final volume in [0.2, 0.3, 0.4, 0.5, 0.6]) player.setVolume(volume),
+      ];
+      await writeStarted.future;
+      await Future<void>.delayed(Duration.zero);
+      expect(usb.writes, [0.2]); // The rest wait behind the DAC write.
+
+      write.complete();
+      await Future.wait(drag);
+      expect(usb.writes, [0.2, 0.6]); // Stale 0.3..0.5 never reach the DAC.
+      expect(player.currentVolume, 0.6);
+      expect(player.usbVolumeSafetyBlockedNotifier.value, isFalse);
+    },
+  );
+
+  test('a hardware drag end repeating the written value does not write again', () async {
+    final usb = _Usb(hardware: true);
+    final player = _player(
+      AudioEngineType.usbDacExperimental,
+      usb,
+      rust: _Rust(),
+    );
+    expect(await player.enableUsbDacBitPerfect(), isTrue);
+    usb.writes.clear();
+    usb.volumeWrite = Completer<void>();
+
+    final tick = player.setVolume(0.7);
+    final end = player.setVolume(0.7);
+    await Future<void>.delayed(Duration.zero);
+    usb.volumeWrite!.complete();
+    await Future.wait([tick, end]);
+    expect(usb.writes, [0.7]);
+  });
+
+  test('a coalesced hardware write still stops the transport when the DAC rejects it', () async {
+    final usb = _Usb(hardware: true);
+    final rust = _Rust();
+    final player = _player(AudioEngineType.usbDacExperimental, usb, rust: rust);
+    expect(await player.enableUsbDacBitPerfect(), isTrue);
+    rust.commands.clear();
+    usb.volumeWriteSucceeds = false;
+    usb.volumeWrite = Completer<void>();
+
+    final drag = [player.setVolume(0.5), player.setVolume(0.9)];
+    await Future<void>.delayed(Duration.zero);
+    usb.volumeWrite!.complete();
+    await Future.wait(drag);
+
+    expect(usb.writes.skip(1), [0.5, 0.9]);
+    expect(rust.commands, contains('pause'));
+    expect(player.usbVolumeSafetyBlockedNotifier.value, isTrue);
+    expect(player.currentVolume, 0.4);
+  });
+
+  group('a hardware level saved before the -80 dB floor', () {
+    // -127..0 dB, in 1/256 dB units.
+    const wideRange = {
+      'rustAudioState': {
+        'direct_usb': {
+          'hardware_volume_min_raw': -32512,
+          'hardware_volume_max_raw': 0,
+        },
+      },
+    };
+
+    Future<void> saveLegacy(double level) async {
+      final key = Uac2PreferencesService.usbDeviceVolumeKey(_authorizedDevice);
+      SharedPreferences.setMockInitialValues({
+        'uac2_usb_device_volume_authorities': jsonEncode({
+          key: {'hardware': level},
+        }),
+      });
+    }
+
+    test('keeps its attenuation rather than its slider number', () async {
+      await saveLegacy(0.5); // -63.5 dB then; 50 % would now be -40 dB.
+      final usb = _Usb(hardware: true)..playbackDebugState = wideRange;
+      final player = _player(
+        AudioEngineType.usbDacExperimental,
+        usb,
+        rust: _Rust(),
+      );
+      expect(await player.enableUsbDacBitPerfect(), isTrue);
+
+      expect(usb.writes, hasLength(1));
+      expect(usb.writes.single, closeTo(0.20625, 1e-9)); // -63.5 dB.
+      final saved = await Uac2PreferencesService()
+          .getUsbVolumeSettingsForDevice(_authorizedDevice);
+      expect(saved.hardware, closeTo(0.20625, 1e-9)); // Migrated for good.
+      expect(saved.legacyHardware, isNull);
+    });
+
+    test('is capped at the low default like any other unverified level', () async {
+      await saveLegacy(0.9); // -12.7 dB then, about 84 % now.
+      final usb = _Usb(hardware: true)..playbackDebugState = wideRange;
+      final player = _player(
+        AudioEngineType.usbDacExperimental,
+        usb,
+        rust: _Rust(),
+      );
+      expect(await player.enableUsbDacBitPerfect(), isTrue);
+      expect(usb.writes, [Uac2PreferencesService.defaultUsbDacVolume]);
+    });
+
+    test('is never replayed as a number when the DAC range is unknown', () async {
+      await saveLegacy(0.5);
+      final usb = _Usb(hardware: true);
+      final player = _player(
+        AudioEngineType.usbDacExperimental,
+        usb,
+        rust: _Rust(),
+      );
+      expect(await player.enableUsbDacBitPerfect(), isTrue);
+      expect(usb.writes, [Uac2PreferencesService.defaultUsbDacVolume]);
+    });
   });
 
   test('a late hardware write cannot approve a different DAC', () async {
