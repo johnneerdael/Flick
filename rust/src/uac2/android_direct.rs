@@ -15,6 +15,7 @@ use crate::uac2::iso_transport_loss::{
     lost_frame_budget, ring_bytes_per_frame, LossLimits, LossLogGate, LossTracker, UrbLoss,
 };
 use crate::uac2::payload_audit_latch::PayloadAuditLatch;
+use crate::uac2::ring_target::{live_processing, needs_refill, RingTargets};
 use crate::uac2::volume_control::{
     common_channel_volume, normalize_volume, parse_uac2_volume_ranges, quantize_volume,
     read_hardware_volume_snapshot, volume_bounds, AudioControlProtocol, OriginalVolumeSlot, VolumeRange,
@@ -93,10 +94,16 @@ const ISO_TRANSFER_TIMEOUT_MS: u32 = 1000;
 // thread keeps it topped up to the target, so a stall upstream (slow storage, a
 // network source, scheduling) shorter than the target is absorbed instead of
 // being heard as a dropout. Anything that must be heard *now* flushes the ring
-// (seek, stop, a user-chosen track), so the depth costs no responsiveness there;
-// it does delay a live DSP, EQ or software-gain change by the ring's fill.
+// (seek, stop, a user-chosen track), so the depth costs no responsiveness there.
+// EQ, DSP and software gain are applied as the audio is rendered, so a change is
+// heard after the ring's fill; the depth below therefore only holds while the
+// path is bit-perfect passthrough, which has nothing live to delay.
 const ANDROID_USB_BUFFER_CAPACITY_MS: usize = 500;
 const ANDROID_USB_BUFFER_TARGET_MS: usize = 250;
+// The depth the render thread keeps instead while anything live is applied (a
+// DSP pipeline, or a software gain other than 1.0), so a change is heard after
+// 100 ms and not a quarter second. See uac2::ring_target.
+const ANDROID_USB_LIVE_BUFFER_TARGET_MS: usize = 100;
 // How much the ring must hold before the stream starts, and before a flushed
 // ring resumes playing. Small on purpose: the ring fills on to its target while
 // playing, so starting or seeking does not wait for the deep buffer.
@@ -705,7 +712,13 @@ struct AndroidDirectUsbRuntimeStats {
     sample_rate: u32,
     channels: usize,
     buffer_capacity_samples: usize,
+    /// The ring's depth in bit-perfect passthrough.
     buffer_target_samples: usize,
+    /// The ring's depth while anything live is applied; never above the target.
+    live_target_samples: usize,
+    /// The depth the render thread is keeping the ring at right now: one of the
+    /// two above, chosen on every render cycle.
+    active_target_samples: AtomicUsize,
     /// Ring fill that starts the stream and ends a post-flush hold; never above
     /// the target.
     start_threshold_samples: usize,
@@ -1462,12 +1475,17 @@ impl AndroidDirectUsbRuntimeStats {
         let start_threshold_samples = frames_per_ms
             .saturating_mul(ANDROID_USB_START_THRESHOLD_MS.min(target_ms))
             .saturating_mul(channels);
+        let live_target_samples = frames_per_ms
+            .saturating_mul(ANDROID_USB_LIVE_BUFFER_TARGET_MS.min(target_ms))
+            .saturating_mul(channels);
 
         Self {
             sample_rate,
             channels,
             buffer_capacity_samples: capacity_samples,
             buffer_target_samples: target_samples,
+            live_target_samples,
+            active_target_samples: AtomicUsize::new(target_samples),
             start_threshold_samples,
             transfer_queue_depth: AtomicUsize::new(0),
             frames_per_packet: AtomicUsize::new(0),
@@ -1543,13 +1561,18 @@ impl AndroidDirectUsbRuntimeStats {
         )
     }
 
+    /// The depth the ring is being kept at now, not the deepest it can be.
     fn buffer_target_ms(&self) -> u32 {
-        samples_to_millis(self.buffer_target_samples, self.sample_rate, self.channels)
+        samples_to_millis(
+            self.active_target_samples.load(Ordering::Relaxed),
+            self.sample_rate,
+            self.channels,
+        )
     }
 
     fn drift_ms_from_target(&self) -> i32 {
         let buffered_samples = self.buffered_samples.load(Ordering::Relaxed) as i64;
-        let target_samples = self.buffer_target_samples as i64;
+        let target_samples = self.active_target_samples.load(Ordering::Relaxed) as i64;
         let sample_delta = buffered_samples - target_samples;
         if self.sample_rate == 0 || self.channels == 0 {
             return 0;
@@ -5814,8 +5837,15 @@ fn run_usb_render_loop(
     let ring_rate = effective_ring_rate(&playback_format);
     let chunk_frames = ((ring_rate as usize * ANDROID_USB_RENDER_CHUNK_MS) / 1_000).max(1);
     let chunk_samples = chunk_frames.saturating_mul(channels);
-    let target_samples = runtime_stats.buffer_target_samples;
+    let ring_targets = RingTargets::new(
+        runtime_stats.buffer_target_samples,
+        runtime_stats.live_target_samples,
+    );
     let start_threshold_samples = runtime_stats.start_threshold_samples;
+    // The wire carries a DSD bitstream: it is never processed, so nothing in it
+    // can be changed live.
+    let is_raw_bitstream =
+        playback_format.is_dop || playback_format.dsd_transport == DsdTransportMode::Native;
     let mut render_buffer = vec![0.0f32; chunk_samples];
     let mut pcm_samples = vec![0i32; chunk_samples];
     let mut warned_no_frames = false;
@@ -5862,7 +5892,19 @@ fn run_usb_render_loop(
             .buffered_samples
             .store(buffered_samples, Ordering::Relaxed);
 
-        if buffered_samples >= target_samples {
+        // How deep to keep the ring is decided every cycle: EQ, DSP and software
+        // gain can be switched on or off during playback. A ring deeper than the
+        // new target is not flushed, only left to drain below it (the audio in it
+        // is already rendered); a shallower one is filled on.
+        let target_samples = ring_targets.select(live_processing(
+            is_raw_bitstream,
+            callback_data.is_passthrough(),
+            callback_data.get_gain(),
+        ));
+        runtime_stats
+            .active_target_samples
+            .store(target_samples, Ordering::Relaxed);
+        if !needs_refill(buffered_samples, target_samples) {
             thread::sleep(Duration::from_millis(ANDROID_USB_RENDER_POLL_MS));
             continue;
         }
@@ -5897,9 +5939,6 @@ fn run_usb_render_loop(
             thread::sleep(Duration::from_millis(ANDROID_USB_RENDER_POLL_MS));
             continue;
         }
-
-        let is_raw_bitstream =
-            playback_format.is_dop || playback_format.dsd_transport == DsdTransportMode::Native;
 
         // ponytail: direct-USB runs the engine in Passthrough, so audio_callback
         // returns raw decoder samples WITHOUT applying engine gain. Apply it here
@@ -10631,5 +10670,264 @@ mod hardware_volume_without_a_stream_tests {
             DIRECT_USB_STATE.lock().as_ref().unwrap().pending_hardware_volume_restore,
             Some(0.3)
         );
+    }
+}
+
+/// How deep the render thread keeps the PCM ring, which is what a live EQ, DSP or
+/// software-gain change has to wait behind. The decision itself is
+/// `uac2::ring_target`; these tests run the real render loop against it.
+#[cfg(test)]
+mod ring_depth_tests {
+    use super::*;
+    use crate::audio::engine::{EngineDsdMode, PipelineMode};
+    use crate::audio::source::{AudioSource, PlaybackRange, SourceInfo};
+
+    const RATE: u32 = 48_000;
+    const SAMPLES_PER_MS: usize = 96;
+    const CHUNK: usize = ANDROID_USB_RENDER_CHUNK_MS * SAMPLES_PER_MS;
+
+    fn deep_stats() -> AndroidDirectUsbRuntimeStats {
+        AndroidDirectUsbRuntimeStats::new(
+            RATE,
+            2,
+            ANDROID_USB_BUFFER_CAPACITY_MS,
+            ANDROID_USB_BUFFER_TARGET_MS,
+        )
+    }
+
+    #[test]
+    fn the_live_depth_is_the_old_hundred_milliseconds_and_the_start_threshold() {
+        assert_eq!(ANDROID_USB_LIVE_BUFFER_TARGET_MS, 100);
+        let stats = deep_stats();
+        assert_eq!(stats.live_target_samples, 100 * SAMPLES_PER_MS);
+        assert_eq!(stats.buffer_target_samples, 250 * SAMPLES_PER_MS);
+        assert!(stats.live_target_samples < stats.buffer_target_samples);
+        // Starting and resuming after a flush wait for the same 100 ms either way.
+        assert_eq!(stats.start_threshold_samples, stats.live_target_samples);
+        assert_eq!(
+            stats.active_target_samples.load(Ordering::Relaxed),
+            stats.buffer_target_samples,
+            "a stream starts out at the deep depth, which the first cycle may lower"
+        );
+
+        // A stream whose whole target is below 100 ms has nothing shallower to go to.
+        let shallow = AndroidDirectUsbRuntimeStats::new(RATE, 2, 100, 50);
+        assert_eq!(shallow.live_target_samples, shallow.buffer_target_samples);
+    }
+
+    #[test]
+    fn diagnostics_report_the_depth_in_force() {
+        let stats = deep_stats();
+        stats.buffered_samples.store(150 * SAMPLES_PER_MS, Ordering::Relaxed);
+        assert_eq!(stats.buffer_target_ms(), 250);
+        assert_eq!(stats.drift_ms_from_target(), -100);
+
+        stats
+            .active_target_samples
+            .store(stats.live_target_samples, Ordering::Relaxed);
+        assert_eq!(stats.buffer_target_ms(), 100);
+        assert_eq!(stats.drift_ms_from_target(), 50);
+        // The capacity is the same either way.
+        assert_eq!(stats.buffer_capacity_ms(), 500);
+    }
+
+    #[test]
+    fn the_output_latency_is_the_ring_fill_in_both_depths() {
+        let stats = deep_stats();
+        for fill_ms in [40usize, 100, 160, 250] {
+            stats
+                .buffered_samples
+                .store(fill_ms * SAMPLES_PER_MS, Ordering::Relaxed);
+            stats.inflight_music_frames.store(96, Ordering::Relaxed);
+            let expected = (fill_ms * 48) as u64 + 96;
+            for target in [stats.buffer_target_samples, stats.live_target_samples] {
+                stats.active_target_samples.store(target, Ordering::Relaxed);
+                assert_eq!(stats.output_latency_frames(), expected, "fill {fill_ms} ms");
+                assert_eq!(stats.output_latency_frames_for_request(0), expected);
+                assert!(
+                    (stats.output_latency_ms() - expected as f64 * 1_000.0 / f64::from(RATE)).abs()
+                        < 1e-9
+                );
+            }
+        }
+    }
+
+    /// The real render loop against a ring nobody drains unless the test does.
+    struct Render {
+        data: Arc<AudioCallbackData>,
+        ring: Arc<Mutex<AndroidDirectUsbPcmRingBuffer>>,
+        stats: Arc<AndroidDirectUsbRuntimeStats>,
+        stop: Arc<AtomicBool>,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    impl Render {
+        fn start() -> Self {
+            let (finished_tx, _finished_rx) = crossbeam_channel::bounded(8);
+            let data = Arc::new(AudioCallbackData::new(
+                RATE,
+                2,
+                finished_tx,
+                PipelineMode::Passthrough,
+                EngineDsdMode::Pcm,
+            ));
+            data.set_volume(1.0);
+            // Four seconds of audio: far more than a test renders.
+            let samples = vec![0.1f32; 4 * RATE as usize * 2];
+            let info = SourceInfo {
+                path: "ring-depth.wav".into(),
+                range: PlaybackRange::default(),
+                original_sample_rate: RATE,
+                output_sample_rate: RATE,
+                channels: 2,
+                total_samples: samples.len() as u64,
+                duration_secs: 4.0,
+                http_origin: None,
+            };
+            let (mut source, mut producer) = AudioSource::new_with_capacity(info, samples.len());
+            assert_eq!(producer.write(&samples), samples.len());
+            source.set_ready();
+            source.set_playing();
+            data.set_current_source_for_test(source);
+
+            let stats = Arc::new(deep_stats());
+            let ring = Arc::new(Mutex::new(AndroidDirectUsbPcmRingBuffer::new(
+                stats.buffer_capacity_samples,
+                2,
+            )));
+            let stop = Arc::new(AtomicBool::new(false));
+            let (event_tx, _event_rx) = crossbeam_channel::bounded(64);
+            let thread = {
+                let (data, ring, stats, stop) =
+                    (data.clone(), ring.clone(), stats.clone(), stop.clone());
+                let format = AndroidDirectUsbPlaybackFormat {
+                    sample_rate: RATE,
+                    bit_depth: 24,
+                    channels: 2,
+                    is_dop: false,
+                    dsd_transport: DsdTransportMode::None,
+                    dsd_bit_rate: 0,
+                };
+                thread::spawn(move || {
+                    let _keep_alive = producer;
+                    run_usb_render_loop(data, event_tx, ring, stats, format, stop);
+                })
+            };
+            Self { data, ring, stats, stop, thread: Some(thread) }
+        }
+
+        fn fill(&self) -> usize {
+            self.ring.lock().len_samples()
+        }
+
+        fn active_target(&self) -> usize {
+            self.stats.active_target_samples.load(Ordering::Relaxed)
+        }
+
+        fn wait_for(&self, what: &str, condition: impl Fn(&Self) -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !condition(self) {
+                assert!(Instant::now() < deadline, "timed out waiting for {what}: fill={}", self.fill());
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
+
+        /// Lets the render thread run many cycles, and returns the ring's fill.
+        fn settle(&self) -> usize {
+            thread::sleep(Duration::from_millis(120));
+            self.fill()
+        }
+
+        /// What the output thread does: take audio out of the ring.
+        fn drain_to(&self, fill: usize) {
+            let take = self.fill().saturating_sub(fill);
+            self.ring
+                .lock()
+                .pop_into_or_pad(&mut vec![0; take], 2, DsdTransportMode::None);
+        }
+    }
+
+    impl Drop for Render {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    /// Switches live processing on and off the way the engine does.
+    enum Live {
+        SoftwareGain,
+        DspPipeline,
+    }
+
+    impl Live {
+        fn set(&self, render: &Render, live: bool) {
+            match self {
+                Live::SoftwareGain => render.data.set_volume(if live { 0.5 } else { 1.0 }),
+                Live::DspPipeline => render.data.set_pipeline_mode(if live {
+                    PipelineMode::Dsp
+                } else {
+                    PipelineMode::Passthrough
+                }),
+            }
+        }
+    }
+
+    fn render_follows_the_mode(live: Live) {
+        let deep = 250 * SAMPLES_PER_MS;
+        let shallow = 100 * SAMPLES_PER_MS;
+        let render = Render::start();
+
+        // Bit-perfect passthrough: filled to the deep target and held there.
+        render.wait_for("the deep fill", |r| r.fill() >= deep);
+        let steady = render.settle();
+        assert!((deep..deep + CHUNK).contains(&steady), "{steady}");
+        assert_eq!(render.active_target(), deep);
+
+        // Live processing starts with the ring at 250 ms: nothing is flushed and
+        // nothing is rendered, the ring is left as it is for the output to drain.
+        live.set(&render, true);
+        assert_eq!(render.settle(), steady, "no refill above the shallow target");
+        assert_eq!(render.active_target(), shallow);
+        assert_eq!(render.ring.lock().flush_epoch(), 0, "the audio in the ring is kept");
+
+        // The output drains it below the shallow target: it is filled on to that
+        // target and no further.
+        render.drain_to(shallow - 3 * CHUNK);
+        render.wait_for("the shallow fill", |r| r.fill() >= shallow);
+        let live_fill = render.settle();
+        assert!((shallow..shallow + CHUNK).contains(&live_fill), "{live_fill}");
+
+        // Back to passthrough: the ring is filled on to the deep target.
+        live.set(&render, false);
+        render.wait_for("the deep fill again", |r| r.fill() >= deep);
+        let steady = render.settle();
+        assert!((deep..deep + CHUNK).contains(&steady), "{steady}");
+        assert_eq!(render.active_target(), deep);
+        assert_eq!(render.ring.lock().flush_epoch(), 0);
+    }
+
+    #[test]
+    fn the_render_thread_follows_a_software_gain_on_and_off() {
+        render_follows_the_mode(Live::SoftwareGain);
+    }
+
+    #[test]
+    fn the_render_thread_follows_the_dsp_pipeline_on_and_off() {
+        render_follows_the_mode(Live::DspPipeline);
+    }
+
+    #[test]
+    fn a_ring_that_starts_live_never_fills_beyond_the_shallow_target() {
+        let shallow = 100 * SAMPLES_PER_MS;
+        let render = Render::start();
+        render.data.set_volume(0.5);
+
+        render.wait_for("the shallow fill", |r| r.fill() >= shallow);
+        let fill = render.settle();
+        assert!((shallow..shallow + CHUNK).contains(&fill), "{fill}");
+        assert_eq!(render.active_target(), shallow);
     }
 }

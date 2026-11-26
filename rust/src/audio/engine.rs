@@ -603,6 +603,15 @@ impl AudioCallbackData {
             .unwrap_or(false)
     }
 
+    /// Makes `source` the current one, for tests outside this module that need
+    /// an engine with something to render (the direct USB render loop's, which
+    /// are compiled for Android only).
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn set_current_source_for_test(&self, source: AudioSource) {
+        self.sources.lock().set_current(source);
+    }
+
     /// Publish the current source's UI progress through the lock-free snapshot.
     /// Callers must hold the `sources` lock so the source cannot be replaced
     /// between selection and publication.

@@ -10,5 +10,6 @@ mod iso_packet_validation_tests;
 mod iso_transport_loss_tests;
 mod output_position_tests;
 mod ring_buffer_tests;
+mod ring_target_tests;
 mod stream_config_tests;
 mod transfer_tests;

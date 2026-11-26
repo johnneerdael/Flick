@@ -64,6 +64,8 @@ mod registry;
 #[cfg(feature = "uac2")]
 mod ring_buffer;
 #[cfg(feature = "uac2")]
+mod ring_target;
+#[cfg(feature = "uac2")]
 mod stream_config;
 #[cfg(feature = "uac2")]
 mod stream_setup;
