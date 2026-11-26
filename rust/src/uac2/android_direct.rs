@@ -2,6 +2,7 @@ use crate::dev_eprintln;
 
 use crate::audio::commands::AudioEvent;
 use crate::audio::engine::{audio_callback_unpaused, AudioCallbackData};
+use crate::uac2::clock_resolution::{audio_control_descriptors_from_config, ClockGraph};
 use crate::uac2::endpoint::{select_explicit_feedback_endpoint, FeedbackEndpointCandidate};
 use crate::uac2::iso_packet_validation::{
     account_timed_out_transfer, iso_transfer_status_label, validate_iso_packet_descriptors,
@@ -60,7 +61,6 @@ const USB_DIR_OUT: u8 = 0x00;
 const USB_TYPE_CLASS: u8 = 0x20;
 const USB_RECIP_INTERFACE: u8 = 0x01;
 const USB_RECIP_ENDPOINT: u8 = 0x02;
-const UAC2_CLOCK_SOURCE: u8 = 0x0a;
 const UAC2_AS_GENERAL: u8 = 0x01;
 const UAC2_FORMAT_TYPE: u8 = 0x02;
 const UAC2_FORMAT_TYPE_I: u8 = 0x01;
@@ -70,6 +70,8 @@ const UAC2_REQUEST_GET_RANGE: u8 = 0x02;
 const UAC1_REQUEST_GET_CUR: u8 = 0x81;
 const UAC2_CLOCK_SOURCE_SAM_FREQ_CONTROL: u16 = 0x0100;
 const UAC2_CLOCK_SOURCE_CLOCK_VALID_CONTROL: u16 = 0x0200;
+/// CX_CLOCK_SELECTOR_CONTROL: GET_CUR returns the 1-based input pin in use.
+const UAC2_CLOCK_SELECTOR_CONTROL: u16 = 0x0100;
 const UAC1_SAM_FREQ_CONTROL: u16 = 0x0100;
 const UAC2_INPUT_TERMINAL: u8 = 0x02;
 const UAC2_OUTPUT_TERMINAL: u8 = 0x03;
@@ -7164,13 +7166,18 @@ fn validate_android_usb_claims(
     Ok(())
 }
 
-/// Find the clock entity that feeds a specific streaming interface's terminal.
+/// Find the Clock Source that feeds a specific streaming interface's terminal.
 ///
-/// UAC2 topology: AudioStreaming AS_GENERAL.bTerminalLink → Terminal.bTerminalID,
-/// then Terminal.bCSourceID gives the Clock Entity ID.
+/// UAC2 topology: AudioStreaming AS_GENERAL.bTerminalLink -> Terminal.bTerminalID,
+/// then Terminal.bCSourceID names a clock entity. That entity may be a Clock
+/// Source, or a Clock Selector or Clock Multiplier that has to be followed to
+/// the Clock Source currently feeding the stream; see `clock_resolution`. A
+/// selector with several inputs is asked which pin it has selected.
 ///
-/// If `terminal_link` is None or the trace fails, falls back to the first
-/// Clock Source found in the AudioControl descriptor.
+/// Only when the topology cannot be resolved (no `terminal_link`, an unknown
+/// terminal, a selector that will not report its pin, a loop) does this fall
+/// back to the first Clock Source in the AudioControl descriptors, which on a
+/// DAC with several clocks may not be the one the stream uses.
 fn find_audio_control_clock(
     device: &Device<Context>,
     handle: &DeviceHandle<Context>,
@@ -7186,112 +7193,62 @@ fn find_audio_control_clock(
                 continue;
             }
 
+            let ac_iface = descriptor.interface_number();
             let extra = descriptor.extra();
             dev_eprintln!(
                 "[USB] AudioControl interface {} alt {} extra bytes: {} bytes",
-                descriptor.interface_number(),
+                ac_iface,
                 descriptor.setting_number(),
                 extra.len(),
             );
 
-            if extra.is_empty() {
+            let raw_descriptors;
+            let class_descriptors: &[u8] = if extra.is_empty() {
                 dev_eprintln!(
                     "[USB] AudioControl interface {} has empty extra bytes; \
                      attempting raw GET_DESCRIPTOR fallback",
-                    descriptor.interface_number(),
+                    ac_iface,
                 );
-                if let Some(clock) = find_clock_from_raw_config_descriptor(
+                match read_audio_control_descriptors_from_raw_config(
                     handle,
                     &config_descriptor,
-                    descriptor.interface_number(),
+                    ac_iface,
                 ) {
-                    return Some(clock);
+                    Some(bytes) => {
+                        raw_descriptors = bytes;
+                        &raw_descriptors
+                    }
+                    None => continue,
                 }
+            } else {
+                extra
+            };
+
+            let graph = ClockGraph::parse(class_descriptors);
+            if !graph.has_clock_entities() {
+                dev_eprintln!(
+                    "[USB] AudioControl interface {} describes no clock entities",
+                    ac_iface
+                );
                 continue;
             }
 
-            // Pass 1: build maps of terminal_id → clock_source_id and
-            // collect all clock source IDs.
-            let mut terminal_to_clock: Vec<(u8, u8)> = Vec::new();
-            let mut clock_source_ids: Vec<(u8, u8)> = Vec::new(); // (clock_id, ac_iface)
-            let ac_iface = descriptor.interface_number();
-
-            let mut index = 0usize;
-            while index + 2 < extra.len() {
-                let length = extra[index] as usize;
-                if length == 0 || index + length > extra.len() {
-                    break;
-                }
-                let desc_type = extra[index + 1];
-                let desc_subtype = extra.get(index + 2).copied().unwrap_or_default();
-
-                if desc_type == USB_DT_CS_INTERFACE {
-                    match desc_subtype {
-                        UAC2_INPUT_TERMINAL | UAC2_OUTPUT_TERMINAL if length >= 8 => {
-                            let terminal_id = extra[index + 3];
-                            let c_source_id = extra[index + 7];
-                            dev_eprintln!(
-                                "[USB] Terminal id={} subtype={} -> bCSourceID={}",
-                                terminal_id,
-                                if desc_subtype == UAC2_INPUT_TERMINAL {
-                                    "IN"
-                                } else {
-                                    "OUT"
-                                },
-                                c_source_id,
-                            );
-                            terminal_to_clock.push((terminal_id, c_source_id));
-                        }
-                        UAC2_CLOCK_SOURCE if length >= 4 => {
-                            let clock_id = extra[index + 3];
-                            dev_eprintln!(
-                                "[USB] Clock Source id={} on AC interface {}",
-                                clock_id, ac_iface,
-                            );
-                            clock_source_ids.push((clock_id, ac_iface));
-                        }
-                        _ => {}
-                    }
-                }
-                index += length;
+            if let Some(clock) = resolve_stream_clock(handle, ac_iface, &graph, terminal_link) {
+                return Some(clock);
             }
 
-            // Pass 2: resolve via topology if terminal_link is known.
-            if let Some(tl) = terminal_link {
-                if let Some(&(_, c_source_id)) =
-                    terminal_to_clock.iter().find(|(tid, _)| *tid == tl)
-                {
-                    // Verify this c_source_id is actually a clock source.
-                    if clock_source_ids.iter().any(|(cid, _)| *cid == c_source_id) {
-                        dev_eprintln!(
-                            "[USB] Clock resolved via topology: bTerminalLink={} -> bCSourceID={} on AC interface {}",
-                            tl, c_source_id, ac_iface,
-                        );
-                        return Some(AudioControlClock {
-                            interface_number: ac_iface,
-                            clock_id: c_source_id,
-                        });
-                    }
-                    dev_eprintln!(
-                        "[USB] Terminal {} references bCSourceID={} but no matching Clock Source entity found; falling back",
-                        tl, c_source_id,
-                    );
-                } else {
-                    dev_eprintln!(
-                        "[USB] bTerminalLink={} not found in AC descriptor terminals; falling back to first clock",
-                        tl,
-                    );
-                }
-            }
-
-            // Fallback: return the first Clock Source entity.
-            if let Some(&(clock_id, iface)) = clock_source_ids.first() {
-                dev_eprintln!(
-                    "[USB] Using first Clock Source id={} on AC interface {} (fallback)",
-                    clock_id, iface,
+            // Last resort: the first Clock Source entity.
+            if let Some(clock_id) = graph.first_clock_source() {
+                log_warn!(
+                    "[USB] Clock topology for bTerminalLink={:?} could not be resolved; using the \
+                     first Clock Source id={} on AC interface {}. On a DAC with more than one clock \
+                     the sample rate may be set on the wrong one.",
+                    terminal_link,
+                    clock_id,
+                    ac_iface,
                 );
                 return Some(AudioControlClock {
-                    interface_number: iface,
+                    interface_number: ac_iface,
                     clock_id,
                 });
             }
@@ -7302,11 +7259,94 @@ fn find_audio_control_clock(
     None
 }
 
-fn find_clock_from_raw_config_descriptor(
+/// Walk the terminal's clock chain on one AudioControl interface. `None` means
+/// the caller must fall back; the reason is logged here.
+fn resolve_stream_clock(
+    handle: &DeviceHandle<Context>,
+    ac_iface: u8,
+    graph: &ClockGraph,
+    terminal_link: Option<u8>,
+) -> Option<AudioControlClock> {
+    let Some(terminal) = terminal_link else {
+        log_warn!(
+            "[USB] No bTerminalLink for the selected stream; cannot trace its clock on AC interface {}",
+            ac_iface
+        );
+        return None;
+    };
+    let resolved = graph.resolve_terminal_clock(terminal, |selector| {
+        get_clock_selector_pin(handle, ac_iface, selector)
+    });
+    match resolved {
+        Ok(resolved) => {
+            log_info!(
+                "[USB] Clock resolved via topology: bTerminalLink={} -> clock path {:?} -> Clock \
+                 Source id={} on AC interface {}{}",
+                terminal,
+                resolved.path,
+                resolved.clock_id,
+                ac_iface,
+                if resolved.assumed_source {
+                    " (no descriptor for that ID; assumed to be the source)"
+                } else {
+                    ""
+                },
+            );
+            Some(AudioControlClock {
+                interface_number: ac_iface,
+                clock_id: resolved.clock_id,
+            })
+        }
+        Err(error) => {
+            log_warn!(
+                "[USB] Could not resolve the clock for bTerminalLink={} on AC interface {}: {}",
+                terminal,
+                ac_iface,
+                error
+            );
+            None
+        }
+    }
+}
+
+/// CX_CLOCK_SELECTOR_CONTROL GET_CUR: the 1-based input pin a Clock Selector
+/// currently has selected. wIndex is the selector's entity ID over the
+/// AudioControl interface number.
+fn get_clock_selector_pin(
+    handle: &DeviceHandle<Context>,
+    interface_number: u8,
+    selector_id: u8,
+) -> Result<u8, String> {
+    let request_type = USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_INTERFACE;
+    let index = (interface_number as u16) | ((selector_id as u16) << 8);
+    let mut data = [0u8; 1];
+    let transferred = handle
+        .read_control(
+            request_type,
+            UAC2_REQUEST_GET_CUR,
+            UAC2_CLOCK_SELECTOR_CONTROL,
+            index,
+            &mut data,
+            Duration::from_millis(500),
+        )
+        .map_err(|error| format!("Clock Selector GET_CUR failed: {}", error))?;
+    if transferred != 1 {
+        return Err(format!(
+            "Clock Selector returned {} bytes, expected 1",
+            transferred
+        ));
+    }
+    Ok(data[0])
+}
+
+/// Read the configuration descriptor with a raw GET_DESCRIPTOR and extract one
+/// AudioControl interface's class-specific descriptors. For platforms that give
+/// no `extra` bytes for the interface.
+fn read_audio_control_descriptors_from_raw_config(
     handle: &DeviceHandle<Context>,
     config_descriptor: &ConfigDescriptor,
     ac_interface_number: u8,
-) -> Option<AudioControlClock> {
+) -> Option<Vec<u8>> {
     let config_value = config_descriptor.number();
     let mut raw = vec![0u8; 1024];
     let request_type: u8 = 0x80;
@@ -7362,54 +7402,15 @@ fn find_clock_from_raw_config_descriptor(
         raw.len(),
         config_value,
     );
-    parse_clock_from_raw_config(&raw, ac_interface_number)
-}
-
-fn parse_clock_from_raw_config(raw: &[u8], ac_interface_number: u8) -> Option<AudioControlClock> {
-    let mut pos = 0usize;
-    let mut inside_ac_interface = false;
-
-    while pos + 1 < raw.len() {
-        let b_length = raw[pos] as usize;
-        if b_length < 2 || pos + b_length > raw.len() {
-            break;
-        }
-        let b_descriptor_type = raw[pos + 1];
-
-        if b_descriptor_type == 0x04 && b_length >= 9 {
-            let iface_num = raw[pos + 2];
-            let iface_class = raw[pos + 5];
-            let iface_subclass = raw[pos + 6];
-            inside_ac_interface = iface_num == ac_interface_number
-                && iface_class == USB_CLASS_AUDIO
-                && iface_subclass == USB_SUBCLASS_AUDIOCONTROL;
-        }
-
-        if inside_ac_interface
-            && b_descriptor_type == USB_DT_CS_INTERFACE
-            && b_length >= 4
-            && raw.get(pos + 2).copied() == Some(UAC2_CLOCK_SOURCE)
-        {
-            let clock_id = raw[pos + 3];
-            log::info!(
-                "[USB] Found clock source via raw config descriptor: interface={} clockId={}",
-                ac_interface_number,
-                clock_id,
-            );
-            return Some(AudioControlClock {
-                interface_number: ac_interface_number,
-                clock_id,
-            });
-        }
-
-        pos += b_length;
+    let descriptors = audio_control_descriptors_from_config(&raw, ac_interface_number);
+    if descriptors.is_empty() {
+        log::error!(
+            "[USB] Raw config descriptor fallback found no class-specific descriptors for interface {}",
+            ac_interface_number,
+        );
+        return None;
     }
-
-    log::error!(
-        "[USB] Raw config descriptor fallback did not find a clock source for interface {}",
-        ac_interface_number,
-    );
-    None
+    Some(descriptors)
 }
 
 fn set_sampling_frequency(

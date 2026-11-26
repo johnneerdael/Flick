@@ -16,6 +16,8 @@ mod backend;
 #[cfg(feature = "uac2")]
 mod capabilities;
 #[cfg(feature = "uac2")]
+mod clock_resolution;
+#[cfg(feature = "uac2")]
 mod compatibility;
 #[cfg(feature = "uac2")]
 mod connection_manager;

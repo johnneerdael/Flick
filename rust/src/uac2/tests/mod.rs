@@ -1,6 +1,7 @@
 mod audio_format_tests;
 mod audio_pipeline_tests;
 mod capabilities_tests;
+mod clock_resolution_tests;
 mod control_requests_tests;
 mod device_classifier_tests;
 mod endpoint_tests;
