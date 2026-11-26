@@ -44,7 +44,7 @@ rusb = { version = "0.9", optional = true }
 # Direct USB DAC output: the isochronous transport, clock, volume and loss
 # accounting live in the usbdac library; src/uac2/usbdac_adapter drives it.
 # Pinned by path while its additive changes (feat/flick-needs) are unmerged.
-usbdac-core = { path = "/private/tmp/claude-501/-Users-jneerdael-Scripts-Flick/76f71e09-57a3-44de-b53d-0de3fa6625ce/scratchpad/usbdac-flick-needs/crates/usbdac-core", optional = true }
+usbdac-core = { git = "https://github.com/johnneerdael/android-usbdac", rev = "4b00cca240e416df70866eb9de22e78f7b6dc7ae", optional = true }
 
 # Async runtime for serialized engine initialization and UAC2 tasks
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros", "io-util"] }

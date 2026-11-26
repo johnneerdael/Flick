@@ -2771,7 +2771,8 @@ dependencies = [
 
 [[package]]
 name = "usbdac-core"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
+source = "git+https://github.com/johnneerdael/android-usbdac?rev=4b00cca240e416df70866eb9de22e78f7b6dc7ae#4b00cca240e416df70866eb9de22e78f7b6dc7ae"
 dependencies = [
  "crossbeam-channel",
  "libc",
