@@ -236,6 +236,9 @@ struct FakeDac {
     /// The rate the DAC runs instead of the requested one.
     rate_override: Mutex<Option<u32>>,
     negotiate_error: Mutex<Option<Error>>,
+    /// The (AudioControl interface, Clock Source) a negotiation reports; `None`
+    /// is a DAC that describes no clock entities.
+    clock: Mutex<Option<(u8, u8)>>,
     open_error: Mutex<Option<Error>>,
     opened: AtomicUsize,
     listener: Mutex<Option<Arc<dyn DacListener>>>,
@@ -260,6 +263,7 @@ impl FakeDac {
             negotiated: Mutex::new(Vec::new()),
             rate_override: Mutex::new(None),
             negotiate_error: Mutex::new(None),
+            clock: Mutex::new(Some((0, 5))),
             open_error: Mutex::new(None),
             opened: AtomicUsize::new(0),
             listener: Mutex::new(None),
@@ -322,6 +326,7 @@ impl DacPort for FakeDac {
                 (WireEncoding::DsdNative { bit_rate }, 1, 4, bit_rate / 8)
             }
         };
+        let clock = *self.clock.lock();
         Ok(FormatFacts {
             encoding,
             sample_rate: rate,
@@ -336,6 +341,9 @@ impl DacPort for FakeDac {
             service_interval_us: 125,
             counter_rate_hz: counter,
             rate_differs_from_request: !native && rate != request.sample_rate,
+            clock_interface_number: clock.map(|(interface, _)| interface),
+            clock_id: clock.map(|(_, source)| source),
+            pacing: "explicit_feedback",
             native: None,
         })
     }
@@ -1541,6 +1549,11 @@ fn the_diagnostics_describe_the_dac_the_stream_and_the_library_stats() {
     assert_eq!(state.active_usage_type.as_deref(), Some("data"));
     assert!(state.feedback_endpoint_present);
     assert_eq!(state.feedback_endpoint_address, Some(0x81));
+    // The clock the rate was set on and how the library paces the endpoint come
+    // from the negotiated format.
+    assert_eq!(state.clock_interface_number, Some(0));
+    assert_eq!(state.clock_id, Some(5));
+    assert_eq!(state.feedback_transfer_type.as_deref(), Some("explicit_feedback"));
     assert_eq!(state.advertised_sample_rates, vec![44_100, 48_000, 96_000]);
     assert_eq!(state.supported_sample_rates, vec![44_100, 48_000, 88_200, 96_000]);
     assert_eq!(state.supported_bit_depths, vec![1, 24]);
@@ -1597,6 +1610,34 @@ fn a_stream_that_runs_another_rate_than_asked_is_not_reported_bit_perfect() {
 }
 
 #[test]
+fn a_dac_without_clock_entities_reports_no_clock_but_still_its_pacing() {
+    let _serial = serial();
+    let fake = FakeDac::new();
+    *fake.facts.lock() = facts();
+    *fake.clock.lock() = None;
+    let data = callback_data(48_000);
+    let (mut backend, _events) = started(&fake, &data, 48_000);
+    let state = android_direct_debug_state();
+    assert_eq!(state.clock_interface_number, None);
+    assert_eq!(state.clock_id, None);
+    assert_eq!(state.feedback_transfer_type.as_deref(), Some("explicit_feedback"));
+    backend.stop().unwrap();
+}
+
+#[test]
+fn the_clock_and_pacing_are_the_open_streams_so_an_idle_dac_reports_none() {
+    let _serial = serial();
+    let fake = FakeDac::new();
+    *fake.facts.lock() = facts();
+    register(&fake);
+    let state = android_direct_debug_state();
+    assert!(state.registered && !state.stream_active);
+    assert_eq!(state.clock_interface_number, None);
+    assert_eq!(state.clock_id, None);
+    assert_eq!(state.feedback_transfer_type, None);
+}
+
+#[test]
 fn diagnostics_without_a_dac_say_only_what_state_the_engine_is_in() {
     let _serial = serial();
     let state = android_direct_debug_state();
@@ -1643,6 +1684,10 @@ fn the_diagnostics_keep_every_field_the_player_and_the_debug_export_read() {
         assert!(object.contains_key(key), "the diagnostics lost {key}");
     }
     assert_eq!(object.len(), 84, "no field was added or dropped");
+    // Registered but not streaming: the clock and pacing belong to the open stream.
+    for key in ["clock_interface_number", "clock_id", "feedback_transfer_type"] {
+        assert!(object[key].is_null(), "{key} is the open stream's, and none is open");
+    }
     let alt = &json["available_alt_settings"][0];
     for key in [
         "interface_number", "alt_setting", "endpoint_address", "endpoint_interval",

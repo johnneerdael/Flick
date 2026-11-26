@@ -77,6 +77,16 @@ pub(crate) struct FormatFacts {
     pub counter_rate_hz: u32,
     /// The DAC runs another rate than the one asked for (nearest-rate policy).
     pub rate_differs_from_request: bool,
+    /// The AudioControl interface the sample rate was programmed through
+    /// (`StreamFormat::clock`). `None` when the DAC describes no clock entities.
+    pub clock_interface_number: Option<u8>,
+    /// The Clock Source entity the sample rate was set and verified on
+    /// (`StreamFormat::clock`).
+    pub clock_id: Option<u8>,
+    /// How the library paces the endpoint: the stable code of
+    /// `StreamFormat::pacing` (`explicit_feedback`, `adaptive`, `synchronous`,
+    /// `unsynchronized`).
+    pub pacing: &'static str,
     /// The library's own format, which `open_stream` needs. Absent in fakes.
     pub native: Option<StreamFormat>,
 }
@@ -101,6 +111,9 @@ impl FormatFacts {
             service_interval_us: format.service_interval_us,
             counter_rate_hz: format.counter_rate_hz(),
             rate_differs_from_request: format.rate_differs_from_request(),
+            clock_interface_number: format.clock.as_ref().map(|clock| clock.control_interface),
+            clock_id: format.clock.as_ref().map(|clock| clock.source_id),
+            pacing: format.pacing.code(),
             native: Some(format.clone()),
         }
     }

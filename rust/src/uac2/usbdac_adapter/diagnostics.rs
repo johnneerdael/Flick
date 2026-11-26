@@ -48,9 +48,11 @@ pub struct AndroidDirectUsbDebugState {
     pub active_usage_type: Option<String>,
     pub active_refresh: Option<u8>,
     pub active_synch_address: Option<u8>,
-    /// Not reported by the library: always `None`.
+    /// The AudioControl interface the open stream's sample rate was programmed
+    /// through (the library's `StreamFormat::clock`); `None` without a stream or
+    /// when the DAC describes no clock entities.
     pub clock_interface_number: Option<u8>,
-    /// Not reported by the library: always `None`.
+    /// The Clock Source the open stream's sample rate was set and verified on.
     pub clock_id: Option<u8>,
     pub clock_requested_sample_rate: Option<u32>,
     pub clock_reported_sample_rate: Option<u32>,
@@ -80,7 +82,10 @@ pub struct AndroidDirectUsbDebugState {
     pub hardware_volume_generation: u64,
     pub feedback_endpoint_present: bool,
     pub feedback_endpoint_address: Option<u8>,
-    /// Not reported by the library: always `None`.
+    /// How the open stream is paced, as the library labels it: `explicit_feedback`,
+    /// `adaptive`, `synchronous` or `unsynchronized`. The library does not report
+    /// the USB transfer type of the feedback endpoint (`isochronous` or
+    /// `interrupt`), which the in-tree driver put here; nothing reads this key.
     pub feedback_transfer_type: Option<String>,
     /// Not reported by the library: always empty.
     pub packet_schedule_frames_preview: Vec<u32>,
@@ -335,6 +340,9 @@ fn build(snapshot: Snapshot) -> AndroidDirectUsbDebugState {
     state.transport_bit_resolution = Some(format.valid_bits);
     state.active_sync_type = Some(format.sync_type.to_string());
     state.feedback_endpoint_present = format.explicit_feedback;
+    state.clock_interface_number = format.clock_interface_number;
+    state.clock_id = format.clock_id;
+    state.feedback_transfer_type = Some(format.pacing.to_string());
     if let Some(alt) = alt_of(&facts, format) {
         state.active_endpoint_interval = Some(alt.endpoint_interval);
         state.active_max_packet_bytes = Some(alt.max_packet_bytes);
