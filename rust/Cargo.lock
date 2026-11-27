@@ -2771,17 +2771,21 @@ dependencies = [
 
 [[package]]
 name = "usbdac-core"
-version = "0.1.2"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d679d8f063989b969eee575187ff6912cf995946b6f7f55ad0c0933dc70b5306"
+checksum = "0b544ec1cd2b0b2ce21cc108e6d90d78b74eec397ccba9f1b920bd7c8741f5cc"
 dependencies = [
+ "base64",
  "crossbeam-channel",
+ "flate2",
  "libc",
  "libusb1-sys",
  "log",
  "once_cell",
  "parking_lot",
  "rusb",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
