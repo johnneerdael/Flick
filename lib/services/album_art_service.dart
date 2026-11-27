@@ -62,12 +62,20 @@ class AlbumArtService {
         existingPath: existingPath,
       );
       if (raw == null || raw.isEmpty) {
-        await _persistArtworkPath(audioSourcePath, null);
+        await _persistArtworkPath(
+          audioSourcePath,
+          null,
+          expectedPath: existingPath,
+        );
         return null;
       }
 
       final cachedPath = await _cacheArtworkBytes(raw);
-      await _persistArtworkPath(audioSourcePath, cachedPath);
+      await _persistArtworkPath(
+        audioSourcePath,
+        cachedPath,
+        expectedPath: existingPath,
+      );
       return cachedPath;
     });
 
@@ -76,6 +84,21 @@ class AlbumArtService {
     } finally {
       _inFlightResolutions.remove(audioSourcePath);
     }
+  }
+
+  /// Validated online covers share the normalized, durable managed cache.
+  Future<String> cacheDownloadedArtwork(Uint8List bytes) =>
+      _cacheArtworkBytes(bytes);
+
+  /// Probe local tags/folder art without mutating rows keyed by file path.
+  /// Bulk jobs commit only their original saved song IDs after this returns.
+  Future<String?> probeLocalArtworkPath(String audioSourcePath) async {
+    final scheme = Uri.tryParse(audioSourcePath)?.scheme ?? '';
+    if (audioSourcePath.isEmpty || !['', 'file', 'content'].contains(scheme))
+      return null;
+    final raw = await _loadArtworkBytes(audioSourcePath);
+    if (raw == null || raw.isEmpty) return null;
+    return _cacheArtworkBytes(raw);
   }
 
   /// Resolve an explicitly tagged artist portrait from [audioSourcePath].
@@ -461,8 +484,9 @@ class AlbumArtService {
 
   Future<void> _persistArtworkPath(
     String audioSourcePath,
-    String? albumArtPath,
-  ) async {
+    String? albumArtPath, {
+    String? expectedPath,
+  }) async {
     try {
       // Network songs keep their cover-art marker in the DB so a cache
       // eviction can always re-resolve; only the in-memory playlist is
@@ -470,12 +494,20 @@ class AlbumArtService {
       final isNetwork = isSupportedNetworkProtocol(
         Uri.tryParse(audioSourcePath)?.scheme,
       );
+      Set<String>? songIds;
       if (!isNetwork) {
-        await _songRepository.updateAlbumArtPath(audioSourcePath, albumArtPath);
+        final changed = await _songRepository.cacheAlbumArtPath(
+          audioSourcePath,
+          expectedPath,
+          albumArtPath,
+        );
+        if (changed.isEmpty) return;
+        songIds = changed.map((song) => song.id).toSet();
       }
       if (albumArtPath != null) {
         PlayerService().syncAlbumArtPaths(
           filePaths: [audioSourcePath],
+          songIds: songIds,
           albumArtPath: albumArtPath,
         );
       }

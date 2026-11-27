@@ -2686,5 +2686,9 @@
   "audioAnalysisUnavailable": "Hindi available ang analysis para sa track na ito.",
   "audioAnalysisUnreadable": "Hindi mabuksan ang file.",
   "audioAnalysisUnsupportedFormat": "Hindi pa supported ng source analysis ang format na ito.",
-  "audioAnalysisUnsupportedMultichannel": "Mono at stereo files lang ang sinusuportahan ng source analysis."
+  "audioAnalysisUnsupportedMultichannel": "Mono at stereo files lang ang sinusuportahan ng source analysis.",
+  "downloadMissingCovers": "Download missing covers",
+  "downloadMissingCoversDescription": "Automatically find covers for tagged local albums. Existing artwork is kept.",
+  "missingCoversProgress": "Checking albums: {completed} of {total}",
+  "missingCoversResult": "Covers filled: {filled} tracks · Unmatched albums: {unmatched} · Failed albums: {failed}"
 }

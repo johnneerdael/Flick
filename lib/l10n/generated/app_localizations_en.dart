@@ -9605,4 +9605,21 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get audioAnalysisSourceNote =>
       'Measured from a separate source-file decode. Some formats include decoder padding, which can affect duration and silence measurements. Playback, DSP, and tags are unchanged.';
+
+  @override
+  String get downloadMissingCovers => 'Download missing covers';
+
+  @override
+  String get downloadMissingCoversDescription =>
+      'Automatically find covers for tagged local albums. Existing artwork is kept.';
+
+  @override
+  String missingCoversProgress(int completed, int total) {
+    return 'Checking albums: $completed of $total';
+  }
+
+  @override
+  String missingCoversResult(int filled, int unmatched, int failed) {
+    return 'Covers filled: $filled tracks · Unmatched albums: $unmatched · Failed albums: $failed';
+  }
 }

@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' as ui;
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -59,7 +61,7 @@ class AlbumArtUpdateResult {
 
 class AlbumArtImportService {
   AlbumArtImportService._({SongRepository? songRepository, http.Client? client})
-    : _songRepository = songRepository ?? SongRepository(),
+    : _providedSongRepository = songRepository,
       _client = client ?? http.Client();
 
   static final AlbumArtImportService instance = AlbumArtImportService._();
@@ -68,7 +70,9 @@ class AlbumArtImportService {
   static const String _musicBrainzHost = 'musicbrainz.org';
   static const String _coverArtHost = 'coverartarchive.org';
 
-  final SongRepository _songRepository;
+  final SongRepository? _providedSongRepository;
+  late final SongRepository _songRepository =
+      _providedSongRepository ?? SongRepository();
   final http.Client _client;
 
   bool isCustomArtworkPath(String? path) {
@@ -80,7 +84,10 @@ class AlbumArtImportService {
     return normalized.contains('/$_customArtworkDirectoryName/');
   }
 
-  Future<List<AlbumArtCandidate>> searchOnlineCandidates(Song song) async {
+  Future<List<AlbumArtCandidate>> searchOnlineCandidates(
+    Song song, {
+    bool automatic = false,
+  }) async {
     final album = _searchAlbumName(song);
     if (album == null) {
       return const [];
@@ -97,13 +104,15 @@ class AlbumArtImportService {
           titleField: 'releasegroup',
           album: album,
           artist: artist,
+          automatic: automatic,
+          year: song.year,
         ),
       );
     } catch (error) {
       lastError = error;
     }
 
-    if (candidates.length < 8) {
+    if (automatic || candidates.length < 8) {
       try {
         candidates.addAll(
           await _searchCoverArtArchive(
@@ -111,6 +120,8 @@ class AlbumArtImportService {
             titleField: 'release',
             album: album,
             artist: artist,
+            automatic: automatic,
+            year: song.year,
           ),
         );
       } catch (error) {
@@ -118,7 +129,7 @@ class AlbumArtImportService {
       }
     }
 
-    if (candidates.length < 12) {
+    if (automatic || candidates.length < 12) {
       try {
         candidates.addAll(
           await _searchITunes(album: album, artist: artist),
@@ -128,7 +139,7 @@ class AlbumArtImportService {
       }
     }
 
-    if (candidates.length < 12) {
+    if (automatic || candidates.length < 12) {
       try {
         candidates.addAll(
           await _searchDeezer(album: album, artist: artist),
@@ -138,12 +149,119 @@ class AlbumArtImportService {
       }
     }
 
-    final deduped = _dedupeCandidates(candidates);
+    final deduped = automatic
+        ? automaticCandidates(song, candidates)
+        : _dedupeCandidates(candidates);
     if (deduped.isEmpty && lastError != null) {
       throw _asImportException(lastError);
     }
 
     return deduped;
+  }
+
+  // Shared by manual and automatic lookups. Reserve slots before awaiting so
+  // concurrent searches cannot send bursts to either metadata provider.
+  final Map<String, DateTime> _nextMetadataRequest = {};
+  Future<void> _spaceMetadataRequest(String host) async {
+    final interval = host == _musicBrainzHost
+        ? const Duration(milliseconds: 1100)
+        : host == 'itunes.apple.com'
+        ? const Duration(milliseconds: 3100)
+        : Duration.zero;
+    if (interval == Duration.zero) return;
+    final now = DateTime.now();
+    final reserved = _nextMetadataRequest[host];
+    final start = reserved != null && reserved.isAfter(now) ? reserved : now;
+    _nextMetadataRequest[host] = start.add(interval);
+    final delay = start.difference(now);
+    if (delay > Duration.zero) await Future<void>.delayed(delay);
+  }
+
+  /// Conservative identity: retain accents, punctuation and non-Latin letters.
+  static String normalizeArtworkIdentity(String value) =>
+      value.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+
+  static int _yearRank(String? date, int? year) =>
+      year != null && int.tryParse((date ?? '').split('-').first) == year
+      ? 0
+      : 1;
+
+  static List<AlbumArtCandidate> automaticCandidates(
+    Song song,
+    Iterable<AlbumArtCandidate> candidates,
+  ) {
+    final album = normalizeArtworkIdentity(song.album ?? '');
+    final artist = normalizeArtworkIdentity(
+      (song.albumArtist?.trim().isNotEmpty ?? false)
+          ? song.albumArtist!
+          : song.artist,
+    );
+    if (album.isEmpty || artist.isEmpty) return [];
+    const sources = [
+      'MusicBrainz release group',
+      'MusicBrainz release',
+      'iTunes',
+      'Deezer',
+    ];
+    final eligible =
+        candidates
+            .where(
+              (candidate) =>
+                  normalizeArtworkIdentity(candidate.title) == album &&
+                  normalizeArtworkIdentity(candidate.artist) == artist &&
+                  Uri.tryParse(candidate.imageUrl)?.scheme == 'https',
+            )
+            .toList()
+          ..sort((a, b) {
+            final year = _yearRank(
+              a.releaseDate,
+              song.year,
+            ).compareTo(_yearRank(b.releaseDate, song.year));
+            if (year != 0) return year;
+            int rank(String source) => sources.contains(source)
+                ? sources.indexOf(source)
+                : sources.length;
+            final source = rank(a.sourceLabel).compareTo(rank(b.sourceLabel));
+            return source != 0 ? source : a.imageUrl.compareTo(b.imageUrl);
+          });
+    final seen = <String>{};
+    return eligible.where((candidate) => seen.add(candidate.imageUrl)).toList();
+  }
+
+  /// Separate content-addressed files cannot overwrite a user's manual cover.
+  Future<String> downloadAutomaticArtwork(AlbumArtCandidate candidate) async {
+    final request = http.Request('GET', Uri.parse(candidate.imageUrl))
+      ..headers.addAll(_downloadHeaders());
+    final response = await _client.send(request).timeout(_requestTimeout);
+    const maxBytes = 20 * 1024 * 1024;
+    if (response.statusCode != 200 ||
+        (response.contentLength ?? 0) > maxBytes) {
+      await response.stream.listen(null).cancel();
+      throw AlbumArtImportException(
+        response.statusCode != 200
+            ? l10n.failedToDownloadAlbumArt(response.statusCode)
+            : l10n.selectedFileIsNotASupported,
+      );
+    }
+    final buffer = BytesBuilder(copy: false);
+    await for (final chunk in response.stream.timeout(_requestTimeout)) {
+      if (buffer.length + chunk.length > maxBytes) {
+        throw AlbumArtImportException(l10n.selectedFileIsNotASupported);
+      }
+      buffer.add(chunk);
+    }
+    final bytes = buffer.takeBytes();
+    if (!_looksLikeImage(bytes)) {
+      throw AlbumArtImportException(l10n.selectedFileIsNotASupported);
+    }
+    final codec = await ui.instantiateImageCodec(bytes, targetWidth: 1000);
+    try {
+      final frame = await codec.getNextFrame();
+      frame.image.dispose();
+    } finally {
+      codec.dispose();
+    }
+    return AlbumArtService.instance.cacheDownloadedArtwork(bytes);
   }
 
   Future<AlbumArtUpdateResult> applyOnlineCandidate({
@@ -359,6 +477,8 @@ class AlbumArtImportService {
     required String titleField,
     required String album,
     required String artist,
+    bool automatic = false,
+    int? year,
   }) async {
     final matches = await _searchMusicBrainz(
       entityType: entityType,
@@ -371,7 +491,35 @@ class AlbumArtImportService {
     }
 
     final results = await Future.wait(
-      matches.take(4).map(_loadCoverArtCandidatesForMatch),
+      (automatic
+              ? (matches
+                    .where(
+                      (match) =>
+                          normalizeArtworkIdentity(match.title) ==
+                              normalizeArtworkIdentity(album) &&
+                          normalizeArtworkIdentity(match.artist) ==
+                              normalizeArtworkIdentity(artist),
+                    )
+                    .toList()
+                  ..sort((a, b) {
+                    final yearOrder = _yearRank(
+                      a.releaseDate,
+                      year,
+                    ).compareTo(_yearRank(b.releaseDate, year));
+                    return yearOrder != 0 ? yearOrder : a.id.compareTo(b.id);
+                  }))
+              : matches)
+          .take(4)
+          .map(
+            (match) =>
+                _loadCoverArtCandidatesForMatch(
+                  match,
+                  frontOnly: automatic,
+                ).catchError((Object error) {
+                  if (automatic) return <AlbumArtCandidate>[];
+                  throw error;
+                }),
+          ),
     );
 
     return results.expand((items) => items).toList();
@@ -445,7 +593,8 @@ class AlbumArtImportService {
       if (scoreCompare != 0) {
         return scoreCompare;
       }
-      return compareCaseInsensitive(a.title, b.title);
+      final titleOrder = compareCaseInsensitive(a.title, b.title);
+      return titleOrder != 0 ? titleOrder : a.id.compareTo(b.id);
     });
 
     return matches;
@@ -562,8 +711,9 @@ class AlbumArtImportService {
   }
 
   Future<List<AlbumArtCandidate>> _loadCoverArtCandidatesForMatch(
-    _MusicBrainzMatch match,
-  ) async {
+    _MusicBrainzMatch match, {
+    bool frontOnly = false,
+  }) async {
     try {
       final response = await _getJson(
         Uri.https(_coverArtHost, '/${match.entityType}/${match.id}'),
@@ -578,13 +728,17 @@ class AlbumArtImportService {
       ) {
         return image['front'] == true;
       }).toList();
-      final preferredImages = frontImages.isNotEmpty
+      final preferredImages = frontOnly || frontImages.isNotEmpty
           ? frontImages
           : images.whereType<Map<String, dynamic>>().take(1).toList();
 
       final candidates = <AlbumArtCandidate>[];
       for (final image in preferredImages.take(2)) {
-        final imageUrl = (image['image'] as String?)?.trim();
+        final rawImageUrl = (image['image'] as String?)?.trim();
+        final imageUrl = rawImageUrl?.replaceFirst(
+          'http://coverartarchive.org/',
+          'https://coverartarchive.org/',
+        );
         if (imageUrl == null || imageUrl.isEmpty) {
           continue;
         }
@@ -619,6 +773,7 @@ class AlbumArtImportService {
   }
 
   Future<Map<String, dynamic>> _getJson(Uri uri) async {
+    await _spaceMetadataRequest(uri.host);
     final response = await _client
         .get(uri, headers: _jsonHeaders())
         .timeout(_requestTimeout);
@@ -640,12 +795,14 @@ class AlbumArtImportService {
   Map<String, String> _jsonHeaders() {
     return const {
       'Accept': 'application/json',
-      'User-Agent': 'FlickPlayer/0.12.0 (album-art-lookup)',
+      'User-Agent': 'FlickPlayer (https://github.com/johnneerdael/Flick)',
     };
   }
 
   Map<String, String> _downloadHeaders() {
-    return const {'User-Agent': 'FlickPlayer/0.12.0 (album-art-lookup)'};
+    return const {
+      'User-Agent': 'FlickPlayer (https://github.com/johnneerdael/Flick)',
+    };
   }
 
   Future<AlbumGroup> _resolveAlbumGroup(Song song) async {

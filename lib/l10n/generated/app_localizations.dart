@@ -16227,6 +16227,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Measured from a separate source-file decode. Some formats include decoder padding, which can affect duration and silence measurements. Playback, DSP, and tags are unchanged.'**
   String get audioAnalysisSourceNote;
+
+  /// No description provided for @downloadMissingCovers.
+  ///
+  /// In en, this message translates to:
+  /// **'Download missing covers'**
+  String get downloadMissingCovers;
+
+  /// No description provided for @downloadMissingCoversDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Automatically find covers for tagged local albums. Existing artwork is kept.'**
+  String get downloadMissingCoversDescription;
+
+  /// No description provided for @missingCoversProgress.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking albums: {completed} of {total}'**
+  String missingCoversProgress(int completed, int total);
+
+  /// No description provided for @missingCoversResult.
+  ///
+  /// In en, this message translates to:
+  /// **'Covers filled: {filled} tracks · Unmatched albums: {unmatched} · Failed albums: {failed}'**
+  String missingCoversResult(int filled, int unmatched, int failed);
 }
 
 class _AppLocalizationsDelegate

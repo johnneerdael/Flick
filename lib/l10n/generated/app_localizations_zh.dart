@@ -8896,4 +8896,20 @@ class AppLocalizationsZh extends AppLocalizations {
   @override
   String get audioAnalysisSourceNote =>
       '测量基于对源文件的独立解码。某些格式包含解码器填充，可能影响时长和静音测量。播放、DSP 和标签均不变。';
+
+  @override
+  String get downloadMissingCovers => '下载缺失的封面';
+
+  @override
+  String get downloadMissingCoversDescription => '自动查找已标记本地专辑的封面，并保留现有封面。';
+
+  @override
+  String missingCoversProgress(int completed, int total) {
+    return '正在检查专辑：$completed/$total';
+  }
+
+  @override
+  String missingCoversResult(int filled, int unmatched, int failed) {
+    return '已补全 $filled 首曲目的封面 · 无匹配专辑：$unmatched · 失败专辑：$failed';
+  }
 }

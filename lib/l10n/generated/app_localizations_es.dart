@@ -9726,4 +9726,21 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String get audioAnalysisSourceNote =>
       'Medido a partir de una decodificación independiente del archivo fuente. Algunos formatos incluyen relleno del decodificador, que puede afectar la duración y las mediciones de silencio. La reproducción, el DSP y las etiquetas no cambian.';
+
+  @override
+  String get downloadMissingCovers => 'Descargar portadas faltantes';
+
+  @override
+  String get downloadMissingCoversDescription =>
+      'Buscar portadas automáticamente para álbumes locales etiquetados. Se conservan las existentes.';
+
+  @override
+  String missingCoversProgress(int completed, int total) {
+    return 'Comprobando álbumes: $completed de $total';
+  }
+
+  @override
+  String missingCoversResult(int filled, int unmatched, int failed) {
+    return 'Portadas añadidas: $filled pistas · Álbumes sin coincidencias: $unmatched · Álbumes fallidos: $failed';
+  }
 }

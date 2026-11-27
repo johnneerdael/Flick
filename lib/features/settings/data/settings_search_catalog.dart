@@ -101,6 +101,7 @@ List<SettingsSearchPage> buildSettingsSearchCatalog() {
           ('removeAllSongs2', l10n.removeAllSongs2),
         ]),
         _section('albumArtwork', l10n.albumArtwork, [
+          ('downloadMissingCovers', l10n.downloadMissingCovers),
           ('stretchNonSquareArt', l10n.stretchNonSquareArt),
         ]),
         _section('metadata', l10n.metadata, []),

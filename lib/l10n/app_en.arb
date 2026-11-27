@@ -12238,5 +12238,32 @@
   "audioAnalysisSourceNote": "Measured from a separate source-file decode. Some formats include decoder padding, which can affect duration and silence measurements. Playback, DSP, and tags are unchanged.",
   "@audioAnalysisSourceNote": {
     "description": "lib/features/player/widgets/audio_analysis_sheet.dart"
+  },
+  "downloadMissingCovers": "Download missing covers",
+  "downloadMissingCoversDescription": "Automatically find covers for tagged local albums. Existing artwork is kept.",
+  "missingCoversProgress": "Checking albums: {completed} of {total}",
+  "missingCoversResult": "Covers filled: {filled} tracks · Unmatched albums: {unmatched} · Failed albums: {failed}",
+  "@missingCoversProgress": {
+    "placeholders": {
+      "completed": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "@missingCoversResult": {
+    "placeholders": {
+      "filled": {
+        "type": "int"
+      },
+      "unmatched": {
+        "type": "int"
+      },
+      "failed": {
+        "type": "int"
+      }
+    }
   }
 }

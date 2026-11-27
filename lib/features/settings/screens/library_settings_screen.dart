@@ -21,6 +21,7 @@ import 'package:flick/features/settings/screens/missing_metadata_screen.dart';
 import 'package:flick/features/settings/widgets/settings_widgets.dart';
 import 'package:flick/providers/providers.dart';
 import 'package:flick/services/album_art_service.dart';
+import 'package:flick/services/missing_album_art_service.dart';
 import 'package:flick/services/alac_converter_service.dart';
 import 'package:flick/services/android_audio_device_service.dart';
 import 'package:flick/services/artwork_backfill_tracker.dart';
@@ -2251,6 +2252,43 @@ class _LibrarySettingsScreenState extends ConsumerState<LibrarySettingsScreen>
           SettingsSectionHeader(l10n.englishForFilipino.albumArtwork, sectionId: 'albumArtwork'),
           SettingsCard(
             children: [
+              ValueListenableBuilder<MissingAlbumArtProgress>(
+                valueListenable: MissingAlbumArtService.instance.progress,
+                builder: (context, progress, _) => Column(
+                  children: [
+                    ActionButton(
+                      icon: LucideIcons.download,
+                      title: l10n.downloadMissingCovers,
+                      subtitle: progress.running
+                          ? l10n.missingCoversProgress(
+                              progress.completed,
+                              progress.total,
+                            )
+                          : progress.finished
+                          ? l10n.missingCoversResult(
+                              progress.filled,
+                              progress.unmatched,
+                              progress.failed,
+                            )
+                          : l10n.downloadMissingCoversDescription,
+                      onTap: progress.running
+                          ? null
+                          : () {
+                              unawaited(
+                                MissingAlbumArtService.instance.start(),
+                              );
+                            },
+                    ),
+                    if (progress.running)
+                      LinearProgressIndicator(
+                        value: progress.total == 0
+                            ? null
+                            : progress.completed / progress.total,
+                      ),
+                  ],
+                ),
+              ),
+              const SettingsDivider(),
               ToggleSetting(
                 icon: LucideIcons.crop,
                 title: l10n.englishForFilipino.stretchNonSquareArt,

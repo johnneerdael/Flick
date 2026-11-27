@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:isar_community/isar.dart';
 
 import '../../core/utils/audio_metadata_utils.dart';
@@ -329,6 +331,77 @@ class SongRepository {
 
     await _isar.writeTxn(() async {
       await _isar.songEntitys.deleteAll(ids);
+    });
+  }
+
+  /// Only fill rows unchanged since a missing-cover job took its snapshot.
+  /// IDs (rather than paths) keep distinct CUE entries independent.
+  Future<List<Song>> fillMissingAlbumArt(
+    List<Song> expected,
+    String path,
+  ) async {
+    final changed = <Song>[];
+    await _isar.writeTxn(() async {
+      for (final original in expected) {
+        final id = int.tryParse(original.id);
+        if (id == null) continue;
+        final current = await _isar.songEntitys.get(id);
+        if (current == null ||
+            current.filePath != original.filePath ||
+            current.albumArtPath != original.albumArt ||
+            current.album != original.album ||
+            current.albumArtist != original.albumArtist ||
+            current.artist != original.artist ||
+            current.year != original.year ||
+            current.startOffsetMs != original.startOffsetMs ||
+            current.endOffsetMs != original.endOffsetMs ||
+            current.sourceType != original.sourceType ||
+            current.folderUri != original.folderUri)
+          continue;
+        final oldArt = current.albumArtPath;
+        if (oldArt != null && oldArt.trim().isNotEmpty) {
+          final uri = Uri.tryParse(oldArt);
+          if (uri?.scheme == 'http' || uri?.scheme == 'https') continue;
+          try {
+            final oldFile = uri?.scheme == 'file'
+                ? File.fromUri(uri!)
+                : File(oldArt);
+            if (oldFile.existsSync() && oldFile.lengthSync() > 0) continue;
+          } on FileSystemException {
+            // An unreadable old cover cannot be considered usable.
+          } on ArgumentError {
+            // Malformed legacy file URIs are stale pointers too.
+          }
+        }
+        current.albumArtPath = path;
+        await _isar.songEntitys.put(current);
+        changed.add(_entityToSong(current));
+      }
+    });
+    return changed;
+  }
+
+  /// Lazy extraction must not erase a manual edit or bulk fill that won the race.
+  Future<List<Song>> cacheAlbumArtPath(
+    String filePath,
+    String? expectedPath,
+    String? resolvedPath,
+  ) async {
+    return _isar.writeTxn(() async {
+      final rows = await _isar.songEntitys
+          .filter()
+          .filePathEqualTo(filePath)
+          .findAll();
+      final changed = <Song>[];
+      for (final row in rows) {
+        if (row.albumArtPath != expectedPath ||
+            row.albumArtPath == resolvedPath)
+          continue;
+        row.albumArtPath = resolvedPath;
+        await _isar.songEntitys.put(row);
+        changed.add(_entityToSong(row));
+      }
+      return changed;
     });
   }
 

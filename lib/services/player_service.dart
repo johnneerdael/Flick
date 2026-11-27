@@ -1756,6 +1756,7 @@ class PlayerService {
   void syncAlbumArtPaths({
     required Iterable<String> filePaths,
     required String? albumArtPath,
+    Set<String>? songIds,
   }) {
     final targetPaths = filePaths.where((path) => path.isNotEmpty).toSet();
     if (targetPaths.isEmpty) {
@@ -1764,7 +1765,9 @@ class PlayerService {
 
     Song syncSong(Song song) {
       final path = song.filePath;
-      if (path == null || !targetPaths.contains(path)) {
+      if (path == null ||
+          !targetPaths.contains(path) ||
+          (songIds != null && !songIds.contains(song.id))) {
         return song;
       }
       if (song.albumArt == albumArtPath) {

@@ -9717,6 +9717,23 @@ class AppLocalizationsTl extends AppLocalizations {
   @override
   String get audioAnalysisSourceNote =>
       'Sinukat mula sa hiwalay na decode ng source file. May decoder padding ang ilang format, na puwedeng makaapekto sa duration at silence measurements. Hindi nagbabago ang playback, DSP, at tags.';
+
+  @override
+  String get downloadMissingCovers => 'Download missing covers';
+
+  @override
+  String get downloadMissingCoversDescription =>
+      'Automatically find covers for tagged local albums. Existing artwork is kept.';
+
+  @override
+  String missingCoversProgress(int completed, int total) {
+    return 'Checking albums: $completed of $total';
+  }
+
+  @override
+  String missingCoversResult(int filled, int unmatched, int failed) {
+    return 'Covers filled: $filled tracks · Unmatched albums: $unmatched · Failed albums: $failed';
+  }
 }
 
 /// The translations for Tagalog, using the Tagalog Baybayin Alibata script (`tl_Tglg`).

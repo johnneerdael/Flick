@@ -12242,5 +12242,32 @@
   "audioAnalysisUnsupportedMultichannel": "El análisis de origen solo admite archivos mono y estéreo.",
   "@audioAnalysisUnsupportedMultichannel": {
     "description": "lib/features/player/widgets/audio_analysis_sheet.dart"
+  },
+  "downloadMissingCovers": "Descargar portadas faltantes",
+  "downloadMissingCoversDescription": "Buscar portadas automáticamente para álbumes locales etiquetados. Se conservan las existentes.",
+  "missingCoversProgress": "Comprobando álbumes: {completed} de {total}",
+  "missingCoversResult": "Portadas añadidas: {filled} pistas · Álbumes sin coincidencias: {unmatched} · Álbumes fallidos: {failed}",
+  "@missingCoversProgress": {
+    "placeholders": {
+      "completed": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "@missingCoversResult": {
+    "placeholders": {
+      "filled": {
+        "type": "int"
+      },
+      "unmatched": {
+        "type": "int"
+      },
+      "failed": {
+        "type": "int"
+      }
+    }
   }
 }

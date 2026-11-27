@@ -2694,5 +2694,9 @@
   "audioAnalysisUnavailable": "此曲目无法分析。",
   "audioAnalysisUnreadable": "无法打开文件。",
   "audioAnalysisUnsupportedFormat": "源文件分析暂不支持此格式。",
-  "audioAnalysisUnsupportedMultichannel": "源文件分析仅支持单声道和立体声文件。"
+  "audioAnalysisUnsupportedMultichannel": "源文件分析仅支持单声道和立体声文件。",
+  "downloadMissingCovers": "下载缺失的封面",
+  "downloadMissingCoversDescription": "自动查找已标记本地专辑的封面，并保留现有封面。",
+  "missingCoversProgress": "正在检查专辑：{completed}/{total}",
+  "missingCoversResult": "已补全 {filled} 首曲目的封面 · 无匹配专辑：{unmatched} · 失败专辑：{failed}"
 }
