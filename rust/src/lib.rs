@@ -16,7 +16,7 @@ use std::{ffi::c_void, sync::OnceLock};
 #[cfg(target_os = "android")]
 use jni::{
     objects::{Global, JIntArray, JObject, JString},
-    sys::{jboolean, jdouble, jint, jintArray, jstring},
+    sys::{jboolean, jdouble, jint, jintArray, jlong, jstring},
     JNIEnv, JavaVM,
 };
 
@@ -791,4 +791,35 @@ pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeSetRust
         log::LevelFilter::Info
     };
     log::set_max_level(level);
+}
+
+/// Starts one opt-in USB support attempt. Zero means capture is already active.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeBeginUsbSupportCapture(
+    _env: JNIEnv<'_>,
+    _controller: JObject<'_>,
+) -> jlong {
+    #[cfg(feature = "uac2")]
+    { crate::uac2::begin_usb_support_capture() as jlong }
+    #[cfg(not(feature = "uac2"))]
+    { 0 }
+}
+
+/// Consumes the matching report after Kotlin has retired the output.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_mossapps_flick_DirectUsbController_nativeFinishUsbSupportCapture(
+    mut env: JNIEnv<'_>,
+    _controller: JObject<'_>,
+    attempt_id: jlong,
+) -> jstring {
+    #[cfg(feature = "uac2")]
+    let report = if attempt_id > 0 { crate::uac2::finish_usb_support_capture(attempt_id as u64) } else { None };
+    #[cfg(not(feature = "uac2"))]
+    let report: Option<String> = { let _ = attempt_id; None };
+    let Some(report) = report else { return std::ptr::null_mut(); };
+    env.with_env(|env| -> jni::errors::Result<jstring> {
+        Ok(env.new_string(report).map(|value| value.into_raw()).unwrap_or(std::ptr::null_mut()))
+    }).resolve::<jni::errors::ThrowRuntimeExAndDefault>()
 }

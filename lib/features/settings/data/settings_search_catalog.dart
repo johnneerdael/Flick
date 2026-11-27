@@ -23,6 +23,8 @@ import '../screens/player_layout_settings_screen.dart';
 import '../screens/privacy_policy_screen.dart';
 import '../screens/queue_settings_screen.dart';
 import '../screens/support_flick_screen.dart';
+import '../screens/support_settings_screen.dart';
+import '../screens/usb_support_diagnostics_screen.dart';
 import '../screens/uac2_preferences_screen.dart';
 import '../screens/uac2_settings_screen.dart';
 import '../screens/ui_customization_settings_screen.dart';
@@ -65,6 +67,22 @@ List<SettingsSearchPage> buildSettingsSearchCatalog() {
   );
 
   return [
+    page(
+      'support_settings',
+      l10n.support,
+      system,
+      LucideIcons.lifeBuoy,
+      (_) => const SupportSettingsScreen(),
+      keywords: 'support help diagnostics',
+    ),
+    page(
+      'usb_support_diagnostics',
+      l10n.usbSupportTitle,
+      l10n.support,
+      LucideIcons.usb,
+      (_) => const UsbSupportDiagnosticsScreen(),
+      keywords: 'usb dac support diagnostics capture report feedback failure save share',
+    ),
     page(
       'library_settings',
       l10n.libraryLabel,

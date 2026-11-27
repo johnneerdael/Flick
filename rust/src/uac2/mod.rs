@@ -78,6 +78,7 @@ pub(crate) use usbdac_adapter::{
 #[cfg(feature = "uac2")]
 #[allow(unused_imports)]
 pub use usbdac_adapter::{
+    begin_usb_support_capture, finish_usb_support_capture,
     android_direct_cached_hardware_mute, android_direct_cached_hardware_volume,
     android_direct_debug_state, android_direct_has_hardware_volume_control,
     android_direct_output_signature, android_direct_preferred_sample_rate,

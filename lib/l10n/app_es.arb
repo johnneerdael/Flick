@@ -12269,5 +12269,139 @@
         "type": "int"
       }
     }
+  },
+  "usbSupportTitle": "Diagnóstico de reproducción USB",
+  "@usbSupportTitle": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportSubtitle": "Graba y comparte un intento de reproducción USB",
+  "@usbSupportSubtitle": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportPrivacy": "La captura está desactivada por defecto. Este informe opcional permanece en tu dispositivo hasta que elijas Guardar o Compartir. No se sube nada automáticamente. Eliminar informe borra el informe local y su copia temporal para compartir; las copias guardadas o compartidas permanecen en su destino.",
+  "@usbSupportPrivacy": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportContents": "Incluye versiones de la app y Android, identificadores del DAC (sin números de serie), ajustes de salida, formatos solicitados y reales, eventos de reproducción, errores y datos disponibles de temporización USB. Excluye audio, nombres de pistas, listas, cuentas, rutas privadas y registros del sistema no relacionados. La captura es limitada y se desactiva al terminar el intento.",
+  "@usbSupportContents": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportRestartNotice": "Iniciar la captura pausa la reproducción actual y libera la salida USB para grabar antes de abrir el DAC. Después usa los controles habituales para reproducir el problema. El informe guardado anterior sigue disponible hasta que se guarde uno nuevo.",
+  "@usbSupportRestartNotice": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportStart": "Iniciar captura (pausar reproducción)",
+  "@usbSupportStart": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportStop": "Detener captura",
+  "@usbSupportStop": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportRecording": "Grabando este intento",
+  "@usbSupportRecording": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportReproduce": "Vuelve al reproductor y repite el fallo una vez con el mismo DAC, cable y ajustes: reproducir, buscar o cambiar de formato. Para un cambio de formato, captura antes de iniciar el primero. Vuelve aquí y detén la captura justo después del problema. La captura continúa al salir de esta pantalla.",
+  "@usbSupportReproduce": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportReady": "Informe listo",
+  "@usbSupportReady": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportReport": "Intento guardado",
+  "@usbSupportReport": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportStage": "Etapa del fallo: {stage}",
+  "@usbSupportStage": {
+    "description": "USB playback support diagnostics screen.",
+    "placeholders": {
+      "stage": {
+        "type": "String"
+      }
+    }
+  },
+  "usbSupportRoute": "Última ruta de salida: {route}",
+  "@usbSupportRoute": {
+    "description": "USB playback support diagnostics screen.",
+    "placeholders": {
+      "route": {
+        "type": "String"
+      }
+    }
+  },
+  "usbSupportUnknown": "Sin registrar",
+  "@usbSupportUnknown": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportSummaryHint": "Estos identificadores describen el último estado registrado, no un diagnóstico. Consulta la vista previa para ver los eventos y detalles. Un fallo temprano puede no tener una traza de feedback USB.",
+  "@usbSupportSummaryHint": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportContext": "Contexto opcional",
+  "@usbSupportContext": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportNotesPrivacy": "Omite nombres de canciones, datos de cuentas y otra información personal. Guarda el contexto antes de salir; la vista previa, guardar y compartir también guardan estas notas.",
+  "@usbSupportNotesPrivacy": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportExpected": "¿Qué esperabas?",
+  "@usbSupportExpected": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportObserved": "¿Qué ocurrió?",
+  "@usbSupportObserved": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportSteps": "Pasos mínimos para repetir el problema",
+  "@usbSupportSteps": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportSetup": "Firmware del DAC, cable, adaptador o hub (si se conoce)",
+  "@usbSupportSetup": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportSaveNotes": "Guardar contexto",
+  "@usbSupportSaveNotes": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportNotesSaved": "Contexto guardado",
+  "@usbSupportNotesSaved": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportPreview": "Vista previa del informe",
+  "@usbSupportPreview": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportSave": "Guardar informe",
+  "@usbSupportSave": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportShare": "Compartir informe",
+  "@usbSupportShare": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportDelete": "Eliminar informe",
+  "@usbSupportDelete": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportSaved": "Informe guardado en la ubicación elegida",
+  "@usbSupportSaved": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportDeleted": "Informe local eliminado",
+  "@usbSupportDeleted": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportRetained": "El informe guardado sigue disponible tras detener, desconectar o reproducir de nuevo. Guárdalo o compártelo antes de sustituirlo por un nuevo intento capturado.",
+  "@usbSupportRetained": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportActionFailed": "No se pudo completar la acción. Inténtalo de nuevo.",
+  "@usbSupportActionFailed": {
+    "description": "USB playback support diagnostics screen."
   }
 }

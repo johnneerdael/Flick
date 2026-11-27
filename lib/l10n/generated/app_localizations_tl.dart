@@ -9734,6 +9734,113 @@ class AppLocalizationsTl extends AppLocalizations {
   String missingCoversResult(int filled, int unmatched, int failed) {
     return 'Covers filled: $filled tracks · Unmatched albums: $unmatched · Failed albums: $failed';
   }
+
+  @override
+  String get usbSupportTitle => 'USB playback diagnostics';
+
+  @override
+  String get usbSupportSubtitle =>
+      'I-record at ibahagi ang isang USB playback attempt';
+
+  @override
+  String get usbSupportPrivacy =>
+      'Naka-off ang capture bilang default. Nasa device mo lang ang optional report hanggang piliin mong i-save o i-share. Walang awtomatikong upload. Binubura ng Delete report ang lokal na report at pansamantalang sharing copy; mananatili ang mga na-save o na-share mong kopya.';
+
+  @override
+  String get usbSupportContents =>
+      'Kasama ang app at Android version, DAC identifiers (walang serial number), output settings, hiniling at aktuwal na format, playback events, errors at available USB feedback timing. Walang audio, track names, playlists, accounts, private file paths o ibang system logs. May limit ang capture at humihinto ito kapag tapos na ang attempt.';
+
+  @override
+  String get usbSupportRestartNotice =>
+      'Ipa-pause ng Start capture ang kasalukuyang playback at ire-release ang USB output para magsimula ang recording bago buksan ang DAC. Gamitin ang normal na player controls para ulitin ang problema. Mananatili ang saved report hanggang may bagong report na ma-save.';
+
+  @override
+  String get usbSupportStart => 'Start capture (i-pause ang playback)';
+
+  @override
+  String get usbSupportStop => 'Stop capture';
+
+  @override
+  String get usbSupportRecording => 'Nire-record ang attempt na ito';
+
+  @override
+  String get usbSupportReproduce =>
+      'Bumalik sa player at ulitin ang failure nang isang beses gamit ang parehong DAC, cable at settings: Play, seek o pagpalit ng format. Para sa format switch, simulan ang capture bago tumugtog ang unang format. Bumalik dito at huminto agad pagkatapos ng problema. Tuloy ang capture kahit umalis sa screen na ito.';
+
+  @override
+  String get usbSupportReady => 'Ready na ang report';
+
+  @override
+  String get usbSupportReport => 'Saved attempt';
+
+  @override
+  String usbSupportStage(String stage) {
+    return 'Failing stage: $stage';
+  }
+
+  @override
+  String usbSupportRoute(String route) {
+    return 'Huling output route: $route';
+  }
+
+  @override
+  String get usbSupportUnknown => 'Hindi na-record';
+
+  @override
+  String get usbSupportSummaryHint =>
+      'Inilalarawan ng identifiers ang huling na-record na state, hindi ang diagnosis. I-preview ang report para sa timeline at detalye. Maaaring walang USB feedback trace kung maaga nang nag-fail.';
+
+  @override
+  String get usbSupportContext => 'Optional context';
+
+  @override
+  String get usbSupportNotesPrivacy =>
+      'Huwag isama ang song names, account details o ibang personal information. I-save ang context bago umalis; sine-save din ng preview, save at share ang notes na ito.';
+
+  @override
+  String get usbSupportExpected => 'Ano ang inaasahan mo?';
+
+  @override
+  String get usbSupportObserved => 'Ano ang nangyari?';
+
+  @override
+  String get usbSupportSteps => 'Pinakamaikling steps para maulit ang problema';
+
+  @override
+  String get usbSupportSetup =>
+      'DAC firmware, cable, adapter o hub (kung alam)';
+
+  @override
+  String get usbSupportSaveNotes => 'Save context';
+
+  @override
+  String get usbSupportNotesSaved => 'Na-save ang context';
+
+  @override
+  String get usbSupportPreview => 'Preview report';
+
+  @override
+  String get usbSupportSave => 'Save report';
+
+  @override
+  String get usbSupportShare => 'Share report';
+
+  @override
+  String get usbSupportDelete => 'Delete report';
+
+  @override
+  String get usbSupportSaved => 'Na-save ang report sa pinili mong lokasyon';
+
+  @override
+  String get usbSupportDeleted => 'Nabura ang lokal na report';
+
+  @override
+  String get usbSupportRetained =>
+      'Mananatili ang saved report pagkatapos ng Stop, disconnect at susunod na playback. I-save o i-share ito bago palitan ng bagong captured attempt.';
+
+  @override
+  String get usbSupportActionFailed =>
+      'Hindi natapos ang action. Subukan ulit.';
 }
 
 /// The translations for Tagalog, using the Tagalog Baybayin Alibata script (`tl_Tglg`).

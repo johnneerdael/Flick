@@ -17,6 +17,7 @@ import 'package:flick/features/settings/screens/network_sources_screen.dart';
 import 'package:flick/features/settings/screens/player_layout_settings_screen.dart';
 import 'package:flick/features/settings/screens/widget_settings_screen.dart';
 import 'package:flick/features/settings/screens/support_flick_screen.dart';
+import 'package:flick/features/settings/screens/support_settings_screen.dart';
 import 'package:flick/core/utils/navigation_helper.dart';
 import 'package:flick/features/settings/widgets/settings_widgets.dart';
 import 'package:flick/features/settings/widgets/donation_coffee_icon.dart';
@@ -294,6 +295,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             subtitle: l10n.browseTheFullControlsGuide,
                             onTap: () =>
                                 _navigate(context, const ManualScreen()),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: AppConstants.spacingLg),
+                      SettingsCard(
+                        children: [
+                          _CategoryTile(
+                            icon: LucideIcons.lifeBuoy,
+                            iconBg: const Color(0xFF2D4A6F),
+                            iconFg: const Color(0xFF8BB8FF),
+                            title: l10n.support,
+                            subtitle: l10n.usbSupportSubtitle,
+                            onTap: () => _navigate(
+                              context,
+                              const SupportSettingsScreen(),
+                            ),
                           ),
                         ],
                       ),

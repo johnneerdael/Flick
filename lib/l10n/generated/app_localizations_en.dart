@@ -9622,4 +9622,110 @@ class AppLocalizationsEn extends AppLocalizations {
   String missingCoversResult(int filled, int unmatched, int failed) {
     return 'Covers filled: $filled tracks · Unmatched albums: $unmatched · Failed albums: $failed';
   }
+
+  @override
+  String get usbSupportTitle => 'USB playback diagnostics';
+
+  @override
+  String get usbSupportSubtitle => 'Record and share one USB playback attempt';
+
+  @override
+  String get usbSupportPrivacy =>
+      'Capture is off by default. This optional report stays on your device until you choose Save or Share. Nothing is uploaded automatically. Delete report removes the local report and its temporary sharing copy; copies you saved or shared remain where you sent them.';
+
+  @override
+  String get usbSupportContents =>
+      'Includes app and Android versions, DAC identifiers (without serial numbers), output settings, requested and actual formats, the playback event timeline, errors and available USB feedback timing. Excludes audio, track names, playlists, accounts, private file paths and unrelated system logs. Capture is bounded and turns off when the attempt ends.';
+
+  @override
+  String get usbSupportRestartNotice =>
+      'Starting capture pauses current playback and releases the USB output so recording begins before the DAC opens. Then use your normal player controls to reproduce the problem. Your existing saved report stays available until a new report is saved.';
+
+  @override
+  String get usbSupportStart => 'Start capture (pause playback)';
+
+  @override
+  String get usbSupportStop => 'Stop capture';
+
+  @override
+  String get usbSupportRecording => 'Recording this attempt';
+
+  @override
+  String get usbSupportReproduce =>
+      'Return to the player and repeat the failure once with the same DAC, cable and settings: Play, seek, or switch formats. For a format switch, capture before the first format starts. Return here and stop promptly after the problem. Capture continues when you leave this screen.';
+
+  @override
+  String get usbSupportReady => 'Report ready';
+
+  @override
+  String get usbSupportReport => 'Saved attempt';
+
+  @override
+  String usbSupportStage(String stage) {
+    return 'Failing stage: $stage';
+  }
+
+  @override
+  String usbSupportRoute(String route) {
+    return 'Last output route: $route';
+  }
+
+  @override
+  String get usbSupportUnknown => 'Not recorded';
+
+  @override
+  String get usbSupportSummaryHint =>
+      'These identifiers describe the last recorded state, not a diagnosis. Preview the report for the timeline and details. An early failure may have no USB feedback trace.';
+
+  @override
+  String get usbSupportContext => 'Optional context';
+
+  @override
+  String get usbSupportNotesPrivacy =>
+      'Leave out song names, account details and other personal information. Save context before leaving; preview, save and share also save these notes.';
+
+  @override
+  String get usbSupportExpected => 'What did you expect?';
+
+  @override
+  String get usbSupportObserved => 'What happened?';
+
+  @override
+  String get usbSupportSteps => 'Shortest steps to repeat the problem';
+
+  @override
+  String get usbSupportSetup =>
+      'DAC firmware, cable, adapter or hub (if known)';
+
+  @override
+  String get usbSupportSaveNotes => 'Save context';
+
+  @override
+  String get usbSupportNotesSaved => 'Context saved';
+
+  @override
+  String get usbSupportPreview => 'Preview report';
+
+  @override
+  String get usbSupportSave => 'Save report';
+
+  @override
+  String get usbSupportShare => 'Share report';
+
+  @override
+  String get usbSupportDelete => 'Delete report';
+
+  @override
+  String get usbSupportSaved => 'Report saved to your chosen location';
+
+  @override
+  String get usbSupportDeleted => 'Local report deleted';
+
+  @override
+  String get usbSupportRetained =>
+      'The saved report remains available after Stop, disconnect and later playback. Save or share it before replacing it with a new captured attempt.';
+
+  @override
+  String get usbSupportActionFailed =>
+      'Could not complete this action. Try again.';
 }

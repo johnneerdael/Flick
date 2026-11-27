@@ -2690,5 +2690,139 @@
   "downloadMissingCovers": "Download missing covers",
   "downloadMissingCoversDescription": "Automatically find covers for tagged local albums. Existing artwork is kept.",
   "missingCoversProgress": "Checking albums: {completed} of {total}",
-  "missingCoversResult": "Covers filled: {filled} tracks · Unmatched albums: {unmatched} · Failed albums: {failed}"
+  "missingCoversResult": "Covers filled: {filled} tracks · Unmatched albums: {unmatched} · Failed albums: {failed}",
+  "usbSupportTitle": "USB playback diagnostics",
+  "@usbSupportTitle": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportSubtitle": "I-record at ibahagi ang isang USB playback attempt",
+  "@usbSupportSubtitle": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportPrivacy": "Naka-off ang capture bilang default. Nasa device mo lang ang optional report hanggang piliin mong i-save o i-share. Walang awtomatikong upload. Binubura ng Delete report ang lokal na report at pansamantalang sharing copy; mananatili ang mga na-save o na-share mong kopya.",
+  "@usbSupportPrivacy": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportContents": "Kasama ang app at Android version, DAC identifiers (walang serial number), output settings, hiniling at aktuwal na format, playback events, errors at available USB feedback timing. Walang audio, track names, playlists, accounts, private file paths o ibang system logs. May limit ang capture at humihinto ito kapag tapos na ang attempt.",
+  "@usbSupportContents": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportRestartNotice": "Ipa-pause ng Start capture ang kasalukuyang playback at ire-release ang USB output para magsimula ang recording bago buksan ang DAC. Gamitin ang normal na player controls para ulitin ang problema. Mananatili ang saved report hanggang may bagong report na ma-save.",
+  "@usbSupportRestartNotice": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportStart": "Start capture (i-pause ang playback)",
+  "@usbSupportStart": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportStop": "Stop capture",
+  "@usbSupportStop": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportRecording": "Nire-record ang attempt na ito",
+  "@usbSupportRecording": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportReproduce": "Bumalik sa player at ulitin ang failure nang isang beses gamit ang parehong DAC, cable at settings: Play, seek o pagpalit ng format. Para sa format switch, simulan ang capture bago tumugtog ang unang format. Bumalik dito at huminto agad pagkatapos ng problema. Tuloy ang capture kahit umalis sa screen na ito.",
+  "@usbSupportReproduce": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportReady": "Ready na ang report",
+  "@usbSupportReady": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportReport": "Saved attempt",
+  "@usbSupportReport": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportStage": "Failing stage: {stage}",
+  "@usbSupportStage": {
+    "description": "USB playback support diagnostics screen.",
+    "placeholders": {
+      "stage": {
+        "type": "String"
+      }
+    }
+  },
+  "usbSupportRoute": "Huling output route: {route}",
+  "@usbSupportRoute": {
+    "description": "USB playback support diagnostics screen.",
+    "placeholders": {
+      "route": {
+        "type": "String"
+      }
+    }
+  },
+  "usbSupportUnknown": "Hindi na-record",
+  "@usbSupportUnknown": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportSummaryHint": "Inilalarawan ng identifiers ang huling na-record na state, hindi ang diagnosis. I-preview ang report para sa timeline at detalye. Maaaring walang USB feedback trace kung maaga nang nag-fail.",
+  "@usbSupportSummaryHint": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportContext": "Optional context",
+  "@usbSupportContext": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportNotesPrivacy": "Huwag isama ang song names, account details o ibang personal information. I-save ang context bago umalis; sine-save din ng preview, save at share ang notes na ito.",
+  "@usbSupportNotesPrivacy": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportExpected": "Ano ang inaasahan mo?",
+  "@usbSupportExpected": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportObserved": "Ano ang nangyari?",
+  "@usbSupportObserved": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportSteps": "Pinakamaikling steps para maulit ang problema",
+  "@usbSupportSteps": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportSetup": "DAC firmware, cable, adapter o hub (kung alam)",
+  "@usbSupportSetup": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportSaveNotes": "Save context",
+  "@usbSupportSaveNotes": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportNotesSaved": "Na-save ang context",
+  "@usbSupportNotesSaved": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportPreview": "Preview report",
+  "@usbSupportPreview": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportSave": "Save report",
+  "@usbSupportSave": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportShare": "Share report",
+  "@usbSupportShare": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportDelete": "Delete report",
+  "@usbSupportDelete": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportSaved": "Na-save ang report sa pinili mong lokasyon",
+  "@usbSupportSaved": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportDeleted": "Nabura ang lokal na report",
+  "@usbSupportDeleted": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportRetained": "Mananatili ang saved report pagkatapos ng Stop, disconnect at susunod na playback. I-save o i-share ito bago palitan ng bagong captured attempt.",
+  "@usbSupportRetained": {
+    "description": "USB playback support diagnostics screen."
+  },
+  "usbSupportActionFailed": "Hindi natapos ang action. Subukan ulit.",
+  "@usbSupportActionFailed": {
+    "description": "USB playback support diagnostics screen."
+  }
 }

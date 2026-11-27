@@ -9,9 +9,12 @@
 //! (`DacFacts`, `FormatFacts`, `StreamSnapshot`); the real implementations here
 //! convert.
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
+use super::support::{self, Capture};
+use serde_json::json;
 use std::os::fd::RawFd;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use usbdac_core::{
     AltFormat, BitPerfectBlocker, Capabilities, CloseVolume, Dac, DacConfig, DacListener,
     DacStream, DeviceInfo, EndpointUsage, Encoding, Error, LinkSpeed, Pacing, StreamFormat, StreamRequest,
@@ -19,7 +22,7 @@ use usbdac_core::{
 };
 
 /// One isochronous OUT alternate setting, as the diagnostics show it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(crate) struct AltFacts {
     pub interface_number: u8,
     pub alt_setting: u8,
@@ -40,7 +43,7 @@ pub(crate) struct AltFacts {
 }
 
 /// What the DAC offers, from the descriptors scanned when it was opened.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub(crate) struct DacFacts {
     pub alts: Vec<AltFacts>,
     pub has_mute: bool,
@@ -119,7 +122,7 @@ impl FormatFacts {
 }
 
 /// What a stream reports, as plain numbers.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub(crate) struct StreamSnapshot {
     pub underruns: u64,
     pub lost_frames: u64,
@@ -229,13 +232,40 @@ pub(crate) type DacOpener =
 pub(crate) fn open_real_dac(
     fd: RawFd,
     info: DeviceInfo,
-    config: DacConfig,
+    mut config: DacConfig,
 ) -> Result<Arc<dyn DacPort>, Error> {
-    let dac = Dac::open(fd, info, config)?;
-    Ok(Arc::new(RealDac(RwLock::new(Some(dac)))))
+    let capture = support::prepare(&info, &mut config);
+    let dac = Dac::open(fd, info, config).map_err(|error| {
+        if let Some(c) = &capture { c.failure("dac_open", &error); }
+        error
+    })?;
+    if let Some(c) = &capture { c.event("dac_opened", json!({})); }
+    Ok(Arc::new(RealDac { handle: Arc::new(RwLock::new(Some(dac))), capture, leg: Mutex::new(None), pending_format: Mutex::new(PendingStreamLeg::default()), capabilities_recorded: AtomicBool::new(false) }))
 }
 
-struct RealDac(RwLock<Option<Dac>>);
+struct RealDac {
+    handle: Arc<RwLock<Option<Dac>>>,
+    capture: Option<Capture>,
+    leg: Mutex<Option<usize>>,
+    // An unopened negotiation can become a stream leg exactly once. Cached
+    // formats reopened later need a fresh leg so their predecessor is retained.
+    pending_format: Mutex<PendingStreamLeg>,
+    capabilities_recorded: AtomicBool,
+}
+
+#[derive(Default)]
+struct PendingStreamLeg {
+    format: Option<String>,
+    number: Option<usize>,
+}
+
+impl PendingStreamLeg {
+    fn take_for(&mut self, format: &str) -> Option<usize> {
+        let pending = self.format.take();
+        let number = self.number.take();
+        if pending.as_deref() == Some(format) { number } else { None }
+    }
+}
 
 const CLOSED: &str = "the DAC is closed";
 
@@ -245,18 +275,41 @@ fn closed() -> Error {
 
 impl DacPort for RealDac {
     fn facts(&self) -> DacFacts {
-        let guard = self.0.read();
-        guard
+        let guard = self.handle.read();
+        let facts = guard
             .as_ref()
             .and_then(|dac| dac.capabilities().ok())
             .map(|capabilities| facts_from_capabilities(&capabilities))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if let Some(c) = &self.capture {
+            if c.active() && !self.capabilities_recorded.swap(true, Ordering::AcqRel) {
+                c.event("capabilities",json!({"capabilities":facts}));
+            }
+        }
+        facts
     }
 
     fn negotiate(&self, request: &StreamRequest) -> Result<FormatFacts, Error> {
-        let guard = self.0.read();
+        let guard = self.handle.read();
         let dac = guard.as_ref().ok_or_else(closed)?;
-        dac.negotiate(request).map(|format| FormatFacts::from_native(&format))
+        if let Some(c) = &self.capture {
+            *self.leg.lock() = c.leg();
+            *self.pending_format.lock() = PendingStreamLeg::default();
+            let request = json!({"leg":*self.leg.lock(),"encoding":format!("{:?}",request.encoding),"sampleRate":request.sample_rate,"validBits":request.bit_depth,"channels":request.channels,"ratePolicy":format!("{:?}",request.rate_policy)});
+            c.update_leg(*self.leg.lock(),"request",request.clone());
+            c.event("negotiate_requested", request);
+        }
+        match dac.negotiate(request) {
+            Ok(format) => {
+                if let Some(c) = &self.capture {
+                    *self.pending_format.lock() = PendingStreamLeg { format: Some(format!("{format:?}")), number: *self.leg.lock() };
+                    c.update_leg(*self.leg.lock(), "format", format_report(&format));
+                    c.event("negotiated",json!({"leg":*self.leg.lock()}));
+                }
+                Ok(FormatFacts::from_native(&format))
+            }
+            Err(e) => { if let Some(c) = &self.capture { c.leg_failure(*self.leg.lock(),"negotiate",&e); } Err(e) }
+        }
     }
 
     fn open_stream(
@@ -264,18 +317,41 @@ impl DacPort for RealDac {
         format: &FormatFacts,
         listener: Arc<dyn DacListener>,
     ) -> Result<Arc<dyn StreamPort>, Error> {
-        let guard = self.0.read();
+        let guard = self.handle.read();
         let dac = guard.as_ref().ok_or_else(closed)?;
         let native = format
             .native
             .as_ref()
             .ok_or_else(|| Error::InvalidState("the format was not negotiated".to_string()))?;
-        let stream = dac.open_stream(native, listener)?;
-        Ok(Arc::new(RealStream(RwLock::new(Some(stream)))))
+        let capture = self.capture.clone();
+        let event_capture = capture.clone();
+        let leg = capture.as_ref().and_then(|c| {
+            let leg = self.pending_format.lock().take_for(&format!("{native:?}")).or_else(|| c.leg());
+            c.update_leg(leg,"format",format_report(native));
+            leg
+        });
+        let wrapped: Arc<dyn DacListener> = if event_capture.is_some() {
+            Arc::new(move |event: usbdac_core::DacEvent| {
+                if let Some(c) = &event_capture {
+                    match &event {
+                        usbdac_core::DacEvent::Error(e) => c.leg_failure(leg,"stream_error",e),
+                        usbdac_core::DacEvent::DeviceLost => c.leg_failure(leg,"device_lost",&Error::DeviceLost),
+                        _ => c.sdk_event(&event),
+                    }
+                }
+                listener.on_event(event);
+            })
+        } else { listener };
+        let stream = dac.open_stream(native, wrapped).map_err(|e| {
+            if let Some(c) = &capture { c.leg_failure(leg,"stream_open",&e); }
+            e
+        })?;
+        if let Some(c) = &capture { c.event("stream_opened",json!({"leg":leg})); }
+        Ok(Arc::new(RealStream { handle: RwLock::new(Some(stream)), dac: self.handle.clone(), capture, leg }))
     }
 
     fn volume(&self) -> Option<Box<dyn VolumePort>> {
-        let guard = self.0.read();
+        let guard = self.handle.read();
         guard
             .as_ref()
             .and_then(Dac::volume)
@@ -283,15 +359,23 @@ impl DacPort for RealDac {
     }
 
     fn set_dsd_overrides(&self, big_endian: Option<bool>, subslot: Option<u8>) -> Result<(), Error> {
-        let guard = self.0.read();
+        let guard = self.handle.read();
         guard
             .as_ref()
             .ok_or_else(closed)?
             .set_dsd_overrides(big_endian, subslot)
+            .map(|()| { if let Some(c) = &self.capture { c.event("dsd_overrides",json!({"bigEndian":big_endian,"subslot":subslot})); } })
     }
 
     fn set_listener(&self, listener: Option<Arc<dyn DacListener>>) {
-        if let Some(dac) = self.0.read().as_ref() {
+        if let Some(dac) = self.handle.read().as_ref() {
+            let capture = self.capture.clone();
+            let listener = if capture.is_some() {
+                listener.map(|listener| Arc::new(move |event: usbdac_core::DacEvent| {
+                    if let Some(c) = &capture { c.sdk_event(&event); }
+                    listener.on_event(event);
+                }) as Arc<dyn DacListener>)
+            } else { listener };
             dac.set_listener(listener);
         }
     }
@@ -299,26 +383,48 @@ impl DacPort for RealDac {
     fn close(&self, volume: CloseVolume) -> Result<(), Error> {
         // The write lock waits for control and negotiation calls in flight, so
         // the host never releases its claims under one.
-        let dac = self.0.write().take();
+        let dac = self.handle.write().take();
         match dac {
-            Some(dac) => dac.close_with(volume),
+            Some(dac) => {
+                if let Some(c) = &self.capture {
+                    c.event("dac_close_requested",json!({}));
+                }
+                let result = dac.close_with(volume);
+                if let Some(c) = &self.capture { match &result {
+                    Ok(()) => c.event("dac_closed",json!({})), Err(e) => c.failure("dac_close",e),
+                } }
+                result
+            },
             None => Ok(()),
         }
     }
 }
 
-struct RealStream(RwLock<Option<DacStream>>);
+struct RealStream {
+    handle: RwLock<Option<DacStream>>,
+    dac: Arc<RwLock<Option<Dac>>>,
+    capture: Option<Capture>,
+    leg: Option<usize>,
+}
 
 impl RealStream {
+    fn control(&self, stage: &str, call: impl FnOnce(&DacStream) -> Result<(),Error>) -> Result<(),Error> {
+        let result = self.with(call);
+        if let Some(c) = &self.capture { match &result {
+            Ok(()) => c.event(stage,json!({"leg":self.leg})), Err(e) => c.leg_failure(self.leg,stage,e),
+        } }
+        result
+    }
+
     fn with<T>(&self, call: impl FnOnce(&DacStream) -> Result<T, Error>) -> Result<T, Error> {
-        match self.0.read().as_ref() {
+        match self.handle.read().as_ref() {
             Some(stream) => call(stream),
             None => Err(Error::InvalidState("the stream is closed".to_string())),
         }
     }
 
     fn peek<T>(&self, default: T, read: impl FnOnce(&DacStream) -> T) -> T {
-        match self.0.read().as_ref() {
+        match self.handle.read().as_ref() {
             Some(stream) => read(stream),
             None => default,
         }
@@ -339,15 +445,15 @@ impl StreamPort for RealStream {
     }
 
     fn play(&self) -> Result<(), Error> {
-        self.with(DacStream::play)
+        self.control("play", DacStream::play)
     }
 
     fn pause(&self) -> Result<(), Error> {
-        self.with(DacStream::pause)
+        self.control("pause", DacStream::pause)
     }
 
     fn flush(&self) -> Result<(), Error> {
-        self.with(DacStream::flush)
+        self.control("flush", DacStream::flush)
     }
 
     fn set_software_gain(&self, gain: f32) -> Result<(), Error> {
@@ -381,10 +487,40 @@ impl StreamPort for RealStream {
     }
 
     fn close(&self) {
-        let stream = self.0.write().take();
+        let stream = self.handle.write().take();
         if let Some(stream) = stream {
+            if let Some(c) = &self.capture {
+                if c.active() {
+                    let stats = stream.stats();
+                    c.update_leg(self.leg,"stats",json!(StreamSnapshot::from_stats(&stats)));
+                    c.update_leg(self.leg,"feedbackStats",json!({
+                        "state":format!("{:?}",stats.state),"feedbackActive":stats.feedback_active,
+                        "feedbackLocked":stats.feedback_locked,"feedbackStale":stats.feedback_stale,
+                        "feedbackAgeMs":stats.feedback_age_ms,"feedbackRateHz":stats.feedback_rate_hz,
+                        "feedbackReports":stats.feedback_reports,"feedbackEmpty":stats.feedback_empty,
+                        "feedbackRejected":stats.feedback_rejected,"feedbackErrors":stats.feedback_errors,
+                        "feedbackTimeouts":stats.feedback_timeouts,"urbTimeouts":stats.urb_timeouts,
+                        "shortPackets":stats.short_packets,"zeroPackets":stats.zero_packets,
+                        "implicitFifoDepth":stats.implicit_fifo_depth,"implicitFifoHighWater":stats.implicit_fifo_high_water,
+                        "implicitWaits":stats.implicit_waits,"implicitEmptyBus":stats.implicit_empty_bus,
+                        "implicitOverruns":stats.implicit_overruns,"implicitInTransfers":stats.implicit_in_transfers,
+                        "implicitOutOfOrder":stats.implicit_out_of_order,"implicitInvalidPackets":stats.implicit_invalid_packets,
+                        "implicitMeasuredFrames":stats.implicit_measured_frames,"implicitScheduledFrames":stats.implicit_scheduled_frames
+                    }));
+                    c.update_leg(self.leg,"explicitFeedbackDiagnostics",json!(format!("{:#?}",stream.explicit_feedback_diagnostics())));
+                    c.update_leg(self.leg,"bitPerfectBlocker",json!(format!("{:?}",stream.bit_perfect_blocker())));
+                    c.event("stream_close_requested",json!({"leg":self.leg}));
+                }
+            }
             if let Err(error) = stream.close() {
+                if let Some(c) = &self.capture { c.leg_failure(self.leg,"stream_close",&error); }
                 log::warn!("[USB] closing the stream: {error}");
+            }
+            if let Some(c) = &self.capture {
+                if c.active() {
+                    if let Some(trace) = self.dac.read().as_ref().and_then(Dac::feedback_trace) { c.feedback(self.leg,trace); }
+                    c.event("stream_closed",json!({"leg":self.leg}));
+                }
             }
         }
     }
@@ -474,6 +610,17 @@ fn facts_from_capabilities(capabilities: &Capabilities) -> DacFacts {
     }
 }
 
+/// Allowlisted negotiated wire, clock and pacing facts; never device identity strings.
+fn format_report(format: &StreamFormat) -> serde_json::Value {
+    json!({"encoding":format!("{:?}",format.encoding),"sampleRate":format.sample_rate,
+        "channels":format.channels,"validBits":format.valid_bits,"subslotBytes":format.subslot_bytes,
+        "interfaceNumber":format.interface_number,"altSetting":format.alt_setting,
+        "endpointAddress":format.endpoint_address,"serviceIntervalUs":format.service_interval_us,
+        "clock":format!("{:?}",format.clock),"pacing":format!("{:?}",format.pacing),
+        "syncType":sync_label(format.sync_type),"counterRateHz":format.counter_rate_hz(),
+        "rateDiffersFromRequest":format.rate_differs_from_request()})
+}
+
 /// Use the selected pacing source, rather than an advertised but unused endpoint.
 pub(crate) fn selected_feedback_endpoint(pacing: Pacing) -> Option<u8> {
     match pacing {
@@ -481,5 +628,24 @@ pub(crate) fn selected_feedback_endpoint(pacing: Pacing) -> Option<u8> {
             Some(endpoint)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod support_leg_tests {
+    use super::PendingStreamLeg;
+
+    #[test]
+    fn a_negotiation_labels_only_one_matching_stream() {
+        let mut pending = PendingStreamLeg { format: Some("pcm-44100".into()), number: Some(3) };
+        assert_eq!(pending.take_for("pcm-44100"), Some(3));
+        // A cached reopen must allocate another leg, retaining the old trace.
+        assert_eq!(pending.take_for("pcm-44100"), None);
+        pending = PendingStreamLeg { format: Some("dsd-native".into()), number: Some(4) };
+        // Reusing an earlier cached format cannot inherit another request's leg.
+        assert_eq!(pending.take_for("pcm-44100"), None);
+        assert_eq!(pending.take_for("dsd-native"), None);
+        // Failed negotiation leaves no pending format to mislabel the next open.
+        assert_eq!(PendingStreamLeg::default().take_for("pcm-44100"), None);
     }
 }

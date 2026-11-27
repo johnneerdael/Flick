@@ -10,6 +10,7 @@ import 'package:flick/src/rust/api/audio_api.dart' as rust_audio;
 import 'package:flick/src/rust/api/uac2_api.dart' as rust_uac2;
 import 'package:flick/services/uac2_preferences_service.dart';
 import 'package:flick/services/usb_dac_volume_restore.dart';
+import 'package:flick/services/usb_support_diagnostics_service.dart';
 import 'package:flick/services/uac2_exception.dart';
 import 'package:flick/core/utils/dev_log.dart';
 import 'package:flick/l10n/l10n.dart';
@@ -829,6 +830,14 @@ class Uac2Service {
     if (!Platform.isAndroid) {
       return false;
     }
+
+    UsbSupportDiagnosticsService.instance.recordRequestedFormat(
+      sampleRate: format.sampleRate,
+      bits: format.bitDepth,
+      channels: format.channels,
+      nativeDsd: format.isNativeDsd,
+      dop: format.isDop,
+    );
 
     await initialize();
     final resolvedDevice =

@@ -16251,6 +16251,192 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Covers filled: {filled} tracks · Unmatched albums: {unmatched} · Failed albums: {failed}'**
   String missingCoversResult(int filled, int unmatched, int failed);
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'USB playback diagnostics'**
+  String get usbSupportTitle;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Record and share one USB playback attempt'**
+  String get usbSupportSubtitle;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Capture is off by default. This optional report stays on your device until you choose Save or Share. Nothing is uploaded automatically. Delete report removes the local report and its temporary sharing copy; copies you saved or shared remain where you sent them.'**
+  String get usbSupportPrivacy;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Includes app and Android versions, DAC identifiers (without serial numbers), output settings, requested and actual formats, the playback event timeline, errors and available USB feedback timing. Excludes audio, track names, playlists, accounts, private file paths and unrelated system logs. Capture is bounded and turns off when the attempt ends.'**
+  String get usbSupportContents;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Starting capture pauses current playback and releases the USB output so recording begins before the DAC opens. Then use your normal player controls to reproduce the problem. Your existing saved report stays available until a new report is saved.'**
+  String get usbSupportRestartNotice;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Start capture (pause playback)'**
+  String get usbSupportStart;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Stop capture'**
+  String get usbSupportStop;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Recording this attempt'**
+  String get usbSupportRecording;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Return to the player and repeat the failure once with the same DAC, cable and settings: Play, seek, or switch formats. For a format switch, capture before the first format starts. Return here and stop promptly after the problem. Capture continues when you leave this screen.'**
+  String get usbSupportReproduce;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Report ready'**
+  String get usbSupportReady;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Saved attempt'**
+  String get usbSupportReport;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Failing stage: {stage}'**
+  String usbSupportStage(String stage);
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Last output route: {route}'**
+  String usbSupportRoute(String route);
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Not recorded'**
+  String get usbSupportUnknown;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'These identifiers describe the last recorded state, not a diagnosis. Preview the report for the timeline and details. An early failure may have no USB feedback trace.'**
+  String get usbSupportSummaryHint;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Optional context'**
+  String get usbSupportContext;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Leave out song names, account details and other personal information. Save context before leaving; preview, save and share also save these notes.'**
+  String get usbSupportNotesPrivacy;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'What did you expect?'**
+  String get usbSupportExpected;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'What happened?'**
+  String get usbSupportObserved;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Shortest steps to repeat the problem'**
+  String get usbSupportSteps;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'DAC firmware, cable, adapter or hub (if known)'**
+  String get usbSupportSetup;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Save context'**
+  String get usbSupportSaveNotes;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Context saved'**
+  String get usbSupportNotesSaved;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Preview report'**
+  String get usbSupportPreview;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Save report'**
+  String get usbSupportSave;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Share report'**
+  String get usbSupportShare;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete report'**
+  String get usbSupportDelete;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Report saved to your chosen location'**
+  String get usbSupportSaved;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Local report deleted'**
+  String get usbSupportDeleted;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'The saved report remains available after Stop, disconnect and later playback. Save or share it before replacing it with a new captured attempt.'**
+  String get usbSupportRetained;
+
+  /// USB playback support diagnostics screen.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not complete this action. Try again.'**
+  String get usbSupportActionFailed;
 }
 
 class _AppLocalizationsDelegate

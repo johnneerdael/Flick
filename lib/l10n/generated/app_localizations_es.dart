@@ -9743,4 +9743,111 @@ class AppLocalizationsEs extends AppLocalizations {
   String missingCoversResult(int filled, int unmatched, int failed) {
     return 'Portadas añadidas: $filled pistas · Álbumes sin coincidencias: $unmatched · Álbumes fallidos: $failed';
   }
+
+  @override
+  String get usbSupportTitle => 'Diagnóstico de reproducción USB';
+
+  @override
+  String get usbSupportSubtitle =>
+      'Graba y comparte un intento de reproducción USB';
+
+  @override
+  String get usbSupportPrivacy =>
+      'La captura está desactivada por defecto. Este informe opcional permanece en tu dispositivo hasta que elijas Guardar o Compartir. No se sube nada automáticamente. Eliminar informe borra el informe local y su copia temporal para compartir; las copias guardadas o compartidas permanecen en su destino.';
+
+  @override
+  String get usbSupportContents =>
+      'Incluye versiones de la app y Android, identificadores del DAC (sin números de serie), ajustes de salida, formatos solicitados y reales, eventos de reproducción, errores y datos disponibles de temporización USB. Excluye audio, nombres de pistas, listas, cuentas, rutas privadas y registros del sistema no relacionados. La captura es limitada y se desactiva al terminar el intento.';
+
+  @override
+  String get usbSupportRestartNotice =>
+      'Iniciar la captura pausa la reproducción actual y libera la salida USB para grabar antes de abrir el DAC. Después usa los controles habituales para reproducir el problema. El informe guardado anterior sigue disponible hasta que se guarde uno nuevo.';
+
+  @override
+  String get usbSupportStart => 'Iniciar captura (pausar reproducción)';
+
+  @override
+  String get usbSupportStop => 'Detener captura';
+
+  @override
+  String get usbSupportRecording => 'Grabando este intento';
+
+  @override
+  String get usbSupportReproduce =>
+      'Vuelve al reproductor y repite el fallo una vez con el mismo DAC, cable y ajustes: reproducir, buscar o cambiar de formato. Para un cambio de formato, captura antes de iniciar el primero. Vuelve aquí y detén la captura justo después del problema. La captura continúa al salir de esta pantalla.';
+
+  @override
+  String get usbSupportReady => 'Informe listo';
+
+  @override
+  String get usbSupportReport => 'Intento guardado';
+
+  @override
+  String usbSupportStage(String stage) {
+    return 'Etapa del fallo: $stage';
+  }
+
+  @override
+  String usbSupportRoute(String route) {
+    return 'Última ruta de salida: $route';
+  }
+
+  @override
+  String get usbSupportUnknown => 'Sin registrar';
+
+  @override
+  String get usbSupportSummaryHint =>
+      'Estos identificadores describen el último estado registrado, no un diagnóstico. Consulta la vista previa para ver los eventos y detalles. Un fallo temprano puede no tener una traza de feedback USB.';
+
+  @override
+  String get usbSupportContext => 'Contexto opcional';
+
+  @override
+  String get usbSupportNotesPrivacy =>
+      'Omite nombres de canciones, datos de cuentas y otra información personal. Guarda el contexto antes de salir; la vista previa, guardar y compartir también guardan estas notas.';
+
+  @override
+  String get usbSupportExpected => '¿Qué esperabas?';
+
+  @override
+  String get usbSupportObserved => '¿Qué ocurrió?';
+
+  @override
+  String get usbSupportSteps => 'Pasos mínimos para repetir el problema';
+
+  @override
+  String get usbSupportSetup =>
+      'Firmware del DAC, cable, adaptador o hub (si se conoce)';
+
+  @override
+  String get usbSupportSaveNotes => 'Guardar contexto';
+
+  @override
+  String get usbSupportNotesSaved => 'Contexto guardado';
+
+  @override
+  String get usbSupportPreview => 'Vista previa del informe';
+
+  @override
+  String get usbSupportSave => 'Guardar informe';
+
+  @override
+  String get usbSupportShare => 'Compartir informe';
+
+  @override
+  String get usbSupportDelete => 'Eliminar informe';
+
+  @override
+  String get usbSupportSaved => 'Informe guardado en la ubicación elegida';
+
+  @override
+  String get usbSupportDeleted => 'Informe local eliminado';
+
+  @override
+  String get usbSupportRetained =>
+      'El informe guardado sigue disponible tras detener, desconectar o reproducir de nuevo. Guárdalo o compártelo antes de sustituirlo por un nuevo intento capturado.';
+
+  @override
+  String get usbSupportActionFailed =>
+      'No se pudo completar la acción. Inténtalo de nuevo.';
 }

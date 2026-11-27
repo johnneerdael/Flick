@@ -92,6 +92,11 @@ class DirectUsbController(private val appContext: Context) {
     private var uac2DeviceCache: List<Map<String, Any?>>? = null
     private var uac2Channel: MethodChannel? = null
     private var audioDeviceChannel: MethodChannel? = null
+    private val supportCapture = UsbSupportCapture(
+        appContext,
+        ::nativeBeginUsbSupportCapture,
+        ::nativeFinishUsbSupportCapture,
+    )
     /** The DAC's name while Flick holds it; null when none is claimed or it is being released. */
     val activeDirectUsbDeviceName: String?
         get() = if (directUsbReleasePending) null else directUsbConnection?.deviceName
@@ -174,6 +179,7 @@ class DirectUsbController(private val appContext: Context) {
     }
 
     private fun registerChannels(flutterEngine: FlutterEngine) {
+        supportCapture.attach(flutterEngine)
         // UAC 2.0 USB Host API (Android): list devices and request permission
         uac2Channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, UAC2_CHANNEL)
         uac2Channel?.setMethodCallHandler { call, result ->
@@ -331,15 +337,16 @@ class DirectUsbController(private val appContext: Context) {
                     val isDop = call.argument<Boolean>("isDop") ?: false
                     val isNativeDsd = call.argument<Boolean>("isNativeDsd") ?: false
                     if (sampleRate != null && bitDepth != null && channels != null) {
-                        result.success(
-                            nativeSetRustDirectUsbPlaybackFormat(
-                                sampleRate,
-                                bitDepth,
-                                channels,
-                                isDop,
-                                isNativeDsd,
-                            )
+                        val applied = nativeSetRustDirectUsbPlaybackFormat(
+                            sampleRate, bitDepth, channels, isDop, isNativeDsd,
                         )
+                        supportCapture.record("configure_format", if (applied) "applied" else "rejected", details = mapOf(
+                            "sampleRate" to sampleRate,
+                            "bitDepth" to bitDepth,
+                            "channels" to channels,
+                            "encoding" to if (isNativeDsd) "native_dsd" else if (isDop) "dop" else "pcm",
+                        ))
+                        result.success(applied)
                     } else {
                         result.error(
                             "INVALID_ARGUMENT",
@@ -375,6 +382,7 @@ class DirectUsbController(private val appContext: Context) {
                 }
                 "markDirectUsbFallback" -> {
                     val reason = call.argument<String>("reason")
+                    supportCapture.record("fallback", "android_managed", failed = true)
                     result.success(nativeMarkRustDirectUsbFallback(reason))
                 }
                 "startPriorityAnchor" -> {
@@ -652,6 +660,7 @@ class DirectUsbController(private val appContext: Context) {
         try {
             val usbManager = appContext.getSystemService(Context.USB_SERVICE) as? UsbManager
             if (usbManager == null) {
+                supportCapture.record("permission", "usb_service_unavailable", failed = true)
                 promptedUsbPermissionDeviceNames.remove(deviceName)
                 result?.error("UAC2_ERROR", "USB service unavailable", null)
                 callback?.invoke(false)
@@ -660,6 +669,7 @@ class DirectUsbController(private val appContext: Context) {
             
             val device = usbManager.deviceList?.get(deviceName)
             if (device == null) {
+                supportCapture.record("permission", "device_not_found", failed = true)
                 promptedUsbPermissionDeviceNames.remove(deviceName)
                 result?.error("NOT_FOUND", "USB device not found: $deviceName", null)
                 callback?.invoke(false)
@@ -667,6 +677,7 @@ class DirectUsbController(private val appContext: Context) {
             }
             
             if (usbManager.hasPermission(device)) {
+                supportCapture.record("permission", "already_granted", device = device)
                 result?.success(true)
                 callback?.invoke(true)
                 return
@@ -685,6 +696,7 @@ class DirectUsbController(private val appContext: Context) {
                 return
             }
             if (!hasActivity) {
+                supportCapture.record("permission", "no_activity", failed = true, device = device)
                 // No screen to show the prompt on (the car started the engine, the
                 // phone may be locked). Only a permission already held works here.
                 Log.i("UAC2", "Not requesting USB permission for $deviceName: no activity to show the prompt")
@@ -731,6 +743,7 @@ class DirectUsbController(private val appContext: Context) {
             } else {
                 appContext.registerReceiver(usbPermissionReceiver, IntentFilter(ACTION_USB_PERMISSION))
             }
+            supportCapture.record("permission", "requested", device = device)
             usbManager.requestPermission(device, permissionIntent)
         } catch (e: Exception) {
             promptedUsbPermissionDeviceNames.remove(deviceName)
@@ -739,6 +752,7 @@ class DirectUsbController(private val appContext: Context) {
             if (pending?.deviceName == deviceName) {
                 finishUac2Permission(pending, false, "UAC2_ERROR")
             } else {
+                supportCapture.record("permission", "request_error", failed = true)
                 result?.error("UAC2_ERROR", "Failed to request permission: ${e.message}", null)
                 callback?.invoke(false)
             }
@@ -754,6 +768,7 @@ class DirectUsbController(private val appContext: Context) {
         pendingUac2Permission = null
         appContext.unregisterReceiverSafely(usbPermissionReceiver)
         usbPermissionReceiver = null
+        supportCapture.record("permission", if (granted) "granted" else errorCode, failed = !granted)
         if (granted) uac2DeviceCache = null
         request.results.forEach {
             if (granted) it.success(true)
@@ -769,10 +784,18 @@ class DirectUsbController(private val appContext: Context) {
         expectedVendorId: Int? = null,
         expectedProductId: Int? = null,
     ): Boolean {
+        var supportStage = "open_device"
         return try {
-            val usbManager = appContext.getSystemService(Context.USB_SERVICE) as? UsbManager ?: return false
-            val device = usbManager.deviceList?.get(deviceName) ?: return false
+            val usbManager = appContext.getSystemService(Context.USB_SERVICE) as? UsbManager ?: run {
+                supportCapture.record(supportStage, "usb_service_unavailable", failed = true)
+                return false
+            }
+            val device = usbManager.deviceList?.get(deviceName) ?: run {
+                supportCapture.record(supportStage, "device_not_found", failed = true)
+                return false
+            }
             if (!usbManager.hasPermission(device)) {
+                supportCapture.record("permission", "denied", failed = true, device = device)
                 Log.e("UAC2", "Cannot activate direct USB without permission for $deviceName")
                 return false
             }
@@ -795,15 +818,19 @@ class DirectUsbController(private val appContext: Context) {
                 throw DirectUsbClaimException("The previous USB DAC is still being released. Retry in a moment.")
             }
             val connection = usbManager.openDevice(device) ?: run {
+                supportCapture.record(supportStage, "usb_open_failed", failed = true, device = device)
                 Log.e("UAC2", "Failed to open USB device for direct playback: $deviceName")
                 return false
             }
             val fileDescriptor = connection.fileDescriptor
             if (fileDescriptor < 0) {
+                supportCapture.record(supportStage, "invalid_file_descriptor", failed = true, device = device)
                 connection.close()
                 Log.e("UAC2", "USB device returned invalid file descriptor: $deviceName")
                 return false
             }
+            supportCapture.record(supportStage, "opened", device = device)
+            supportStage = "claim_interfaces"
             val registration = DirectUsbConnection(device, connection)
             var selectedConfiguration: android.hardware.usb.UsbConfiguration? = null
             val registered = registration.claims.register(
@@ -813,6 +840,7 @@ class DirectUsbController(private val appContext: Context) {
                     directUsbPlaybackInterfaces(configuration, device)
                 },
                 registerNative = { interfaces ->
+                    supportStage = "feedback_preflight"
                     val configuration = selectedConfiguration ?: error("USB configuration was not selected")
                     val preflight = nativeDirectUsbFeedbackPreflight(
                         fileDescriptor, device.vendorId, device.productId, registration.productName,
@@ -842,6 +870,12 @@ class DirectUsbController(private val appContext: Context) {
                         Log.w("UAC2", "[USB] Optional feedback interfaces unavailable: $unavailable")
                     }
                     val ids = registration.claims.successfulClaims().map { it.id }.toIntArray()
+                    supportCapture.record("claim_interfaces", "claimed", device = device, details = mapOf(
+                        "configurationId" to configuration.id,
+                        "claimedInterfaces" to ids.toList(),
+                        "unavailableFeedbackInterfaces" to unavailable,
+                    ))
+                    supportStage = "open_dac"
                     nativeRegisterRustDirectUsbDevice(
                         fileDescriptor,
                         device.vendorId,
@@ -859,16 +893,20 @@ class DirectUsbController(private val appContext: Context) {
                 },
             )
             if (!registered) {
+                supportCapture.record(supportStage, "registration_rejected", failed = true, device = device)
                 Log.e("UAC2", "Rust rejected direct USB registration for $deviceName")
                 return false
             }
             directUsbConnection = registration
+            supportStage = "hardware_volume"
 
             if (!restoreDirectUsbHardwareVolume(deviceName, restoreVolume)) {
+                supportCapture.record(supportStage, "restore_failed", failed = true, device = device)
                 deactivateDirectUsb()
                 return false
             }
             if (!nativeSetRustDirectUsbLockEnabled(true)) {
+                supportCapture.record("idle_lock", "lock_failed", failed = true, device = device)
                 Log.e("UAC2", "Rust direct USB idle lock failed for $deviceName")
                 deactivateDirectUsb()
                 return false
@@ -877,9 +915,11 @@ class DirectUsbController(private val appContext: Context) {
             Log.i("UAC2", "Direct USB DAC activated for $deviceName")
             true
         } catch (e: DirectUsbClaimException) {
+            supportCapture.record(supportStage, "claim_failed", failed = true)
             Log.w("UAC2", e.message ?: "USB audio interface claim failed")
             throw e
         } catch (e: Exception) {
+            supportCapture.record(supportStage, e.javaClass.simpleName, failed = true)
             Log.e("UAC2", "Failed to activate direct USB DAC: ${e.message}", e)
             if (activeDirectUsbDeviceName == deviceName) deactivateDirectUsb()
             false
@@ -1849,6 +1889,7 @@ class DirectUsbController(private val appContext: Context) {
                         maybeRequestPermissionForAttachedDevice(attachedDevice)
                         // Notify Flutter if channel is available
                         if (attachedDevice != null && isLikelyUsbAudioDevice(attachedDevice, currentRouteLabelHint())) {
+                            supportCapture.record("attach", "usb_audio", device = attachedDevice)
                             uac2Channel?.invokeMethod("onDeviceAttached", null)
                         }
                         audioDeviceChannel?.invokeMethod("onPlaybackDevicesChanged", null)
@@ -1865,6 +1906,7 @@ class DirectUsbController(private val appContext: Context) {
                         val detachedName = detachedDevice?.deviceName
                         val wasDirect = detachedName != null && detachedName == activeDirectUsbDeviceName
                         if (wasDirect) {
+                            supportCapture.record("detach", "device_lost", failed = true, device = detachedDevice)
                             // Gone: nothing to write back to, and a replug starts fresh.
                             deactivateDirectUsb(OriginalVolumeAction.FORGET)
                         }
@@ -1919,6 +1961,9 @@ class DirectUsbController(private val appContext: Context) {
             Log.w("AudioDevice", "AudioDeviceCallback registration failed: ${e.message}")
         }
     }
+
+    private external fun nativeBeginUsbSupportCapture(): Long
+    private external fun nativeFinishUsbSupportCapture(attemptId: Long): String?
 
     private external fun nativeDirectUsbFeedbackPreflight(
         fd: Int,

@@ -8912,4 +8912,108 @@ class AppLocalizationsZh extends AppLocalizations {
   String missingCoversResult(int filled, int unmatched, int failed) {
     return '已补全 $filled 首曲目的封面 · 无匹配专辑：$unmatched · 失败专辑：$failed';
   }
+
+  @override
+  String get usbSupportTitle => 'USB 播放诊断';
+
+  @override
+  String get usbSupportSubtitle => '记录并分享一次 USB 播放尝试';
+
+  @override
+  String get usbSupportPrivacy =>
+      '默认关闭记录。此可选报告保留在设备上，直到你选择保存或分享。不会自动上传任何内容。删除报告会移除本地报告及其临时分享副本；已保存或分享的副本仍保留在目标位置。';
+
+  @override
+  String get usbSupportContents =>
+      '包括应用和 Android 版本、DAC 标识（不含序列号）、输出设置、请求及实际格式、播放事件时间线、错误及可用的 USB 反馈时序。不包含音频、曲名、播放列表、账户、私有文件路径或无关系统日志。记录有容量限制，并在尝试结束时关闭。';
+
+  @override
+  String get usbSupportRestartNotice =>
+      '开始记录会暂停当前播放并释放 USB 输出，使记录在 DAC 打开前开始。然后使用常规播放控件重现问题。现有已保存报告会保留，直到保存新报告。';
+
+  @override
+  String get usbSupportStart => '开始记录（暂停播放）';
+
+  @override
+  String get usbSupportStop => '停止记录';
+
+  @override
+  String get usbSupportRecording => '正在记录本次尝试';
+
+  @override
+  String get usbSupportReproduce =>
+      '返回播放器，使用相同 DAC、线缆及设置重现一次故障，例如播放、跳转或切换格式。测试格式切换时，请在首个格式开始前记录。问题出现后及时返回此处停止。离开此页面不会停止记录。';
+
+  @override
+  String get usbSupportReady => '报告已就绪';
+
+  @override
+  String get usbSupportReport => '已保存的尝试';
+
+  @override
+  String usbSupportStage(String stage) {
+    return '故障阶段：$stage';
+  }
+
+  @override
+  String usbSupportRoute(String route) {
+    return '最后输出路径：$route';
+  }
+
+  @override
+  String get usbSupportUnknown => '未记录';
+
+  @override
+  String get usbSupportSummaryHint =>
+      '这些标识描述最后记录的状态，并非诊断结论。预览报告可查看时间线及详情。早期故障可能没有 USB 反馈轨迹。';
+
+  @override
+  String get usbSupportContext => '可选补充说明';
+
+  @override
+  String get usbSupportNotesPrivacy =>
+      '请勿填写曲名、账户信息或其他个人信息。离开前请保存说明；预览、保存和分享报告也会保存这些备注。';
+
+  @override
+  String get usbSupportExpected => '预期结果是什么？';
+
+  @override
+  String get usbSupportObserved => '实际发生了什么？';
+
+  @override
+  String get usbSupportSteps => '重现问题的最简步骤';
+
+  @override
+  String get usbSupportSetup => 'DAC 固件、线缆、转接器或集线器（如已知）';
+
+  @override
+  String get usbSupportSaveNotes => '保存说明';
+
+  @override
+  String get usbSupportNotesSaved => '说明已保存';
+
+  @override
+  String get usbSupportPreview => '预览报告';
+
+  @override
+  String get usbSupportSave => '保存报告';
+
+  @override
+  String get usbSupportShare => '分享报告';
+
+  @override
+  String get usbSupportDelete => '删除报告';
+
+  @override
+  String get usbSupportSaved => '报告已保存到所选位置';
+
+  @override
+  String get usbSupportDeleted => '本地报告已删除';
+
+  @override
+  String get usbSupportRetained =>
+      '已保存的报告在停止、断开连接或后续播放后仍然可用。请在新记录的尝试替换报告前保存或分享。';
+
+  @override
+  String get usbSupportActionFailed => '无法完成此操作，请重试。';
 }

@@ -42,6 +42,7 @@ import 'package:flick/services/color_extraction_service.dart';
 import 'package:flick/services/album_color_mode_preference_service.dart';
 import 'package:flick/models/album_color_mode.dart';
 import 'package:flick/services/uac2_service.dart';
+import 'package:flick/services/usb_support_diagnostics_service.dart';
 import 'package:flick/services/usb_dac_volume_restore.dart';
 import 'package:flick/services/alac_converter_service.dart';
 import 'package:flick/services/playback_cache_preferences_service.dart';
@@ -1189,6 +1190,29 @@ class PlayerService {
     // while Rust is still draining transfers.
     await _sessionManager.switchMode(AudioEngineType.normalAndroid, reason: reason);
     await _uac2Service.releaseAndroidDirectUsbRuntime();
+  }
+
+  /// Pause and retire the existing DAC so the next play uses the current
+  /// diagnostics capture configuration, with the usual route and volume policy.
+  Future<void> retireUsbForSupportDiagnostics() async {
+    Object? failure;
+    await _enqueuePlaybackRequest(() async {
+      if (_sessionManager.initializedMode != AudioEngineType.usbDacExperimental &&
+          _uac2Service.currentDeviceStatus?.directUsbRegistered != true) {
+        return;
+      }
+      try {
+        await _pauseInternal();
+        await _tearDownDirectUsbForRecovery(reason: 'USB support capture restart');
+        if (_uac2Service.currentDeviceStatus?.directUsbRegistered == true) {
+          throw StateError('USB_OUTPUT_STILL_REGISTERED');
+        }
+        await _sessionManager.syncRouteSelection(reason: 'USB support capture restart');
+      } catch (e) {
+        failure = e;
+      }
+    });
+    if (failure case final error?) throw error;
   }
 
   /// Only a direct stream on the previously playing DAC can satisfy a
@@ -4179,6 +4203,16 @@ class PlayerService {
           ? _stringValue(directUsbState?['hardware_volume_error'])
           : null,
     );
+    UsbSupportDiagnosticsService.instance.recordRoute(
+      path: pathManagement.name,
+      selected: _sessionManager.selectedMode.name,
+      initialized: _sessionManager.initializedMode?.name,
+      mixerManaged: isMixerManaged,
+      resampling: resamplerActive,
+      directRegistered: directUsbRegistered,
+      requestedRate: requestedOutputSampleRate,
+      reportedRate: reportedOutputSampleRate,
+    );
     unawaited(_reconcileVolumeForTier(_determineCurrentTier()));
 
     // `reported` is the app-side stream rate. Bluetooth links usually resample
@@ -4448,6 +4482,7 @@ class PlayerService {
       _handleDirectUsbRuntimeFailure(message);
 
   Future<void> _handleDirectUsbRuntimeFailure(String message) {
+    UsbSupportDiagnosticsService.instance.recordPlayback(UsbSupportPlaybackEvent.transportFailure);
     _midStreamUsbFallbackActive = true;
     final failedEngine = _rustEngine;
     final normalized = message.toLowerCase();
@@ -6327,6 +6362,7 @@ class PlayerService {
     List<Song>? playlist,
     PlaybackContext? context,
   }) {
+    UsbSupportDiagnosticsService.instance.recordPlayback(UsbSupportPlaybackEvent.play);
     _debugLog('[UI] tap(${song.id})');
     _cancelUsbReconnect();
     if (context != null) setPlaybackContext(context);
@@ -6884,6 +6920,7 @@ class PlayerService {
     Duration? retainedPosition,
     bool Function()? canStart,
   }) async {
+    UsbSupportDiagnosticsService.instance.recordPlayback(UsbSupportPlaybackEvent.resume);
     final playbackIntent = _usbPlaybackIntentRevision;
     bool requestIsCurrent() =>
         (reconnect?.isCurrent() ?? true) && (canStart?.call() ?? true);
@@ -7481,6 +7518,7 @@ class PlayerService {
   }
 
   Future<void> seek(Duration position) async {
+    UsbSupportDiagnosticsService.instance.recordPlayback(UsbSupportPlaybackEvent.seek, position: position);
     if (_castingService.isActive) {
       await _castingService.delegateSeek(position);
       return;

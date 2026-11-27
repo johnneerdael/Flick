@@ -163,6 +163,7 @@ mod tests {
         assert!(!config.require_hardware_volume);
         assert!(config.realtime_priority);
         assert_eq!(config.hand_back, HandBack::Keep);
+        assert!(!config.capture_feedback_trace, "support capture is off by default");
         assert!(!config.allow_unsynchronized_async, "nominal asynchronous fallback stays disabled");
         // Everything else is the library's tuning.
         let defaults = DacConfig::default();

@@ -20,6 +20,8 @@ mod ports;
 mod position;
 mod render;
 mod state;
+mod support;
+pub use support::{begin_usb_support_capture, finish_usb_support_capture};
 mod volume;
 
 #[cfg(test)]
