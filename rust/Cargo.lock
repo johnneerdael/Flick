@@ -2771,9 +2771,9 @@ dependencies = [
 
 [[package]]
 name = "usbdac-core"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3548d32d6a711ffcacdf03349a0eba0359cbfe76c75b132ef82b8dab8215dc64"
+checksum = "d679d8f063989b969eee575187ff6912cf995946b6f7f55ad0c0933dc70b5306"
 dependencies = [
  "crossbeam-channel",
  "libc",
