@@ -20,6 +20,9 @@ impl TestDir {
             std::process::id()
         ));
         fs::create_dir_all(&path).unwrap();
+        // The scanners canonicalize their root; on macOS the temp dir sits
+        // behind the /var -> /private/var symlink, so match that here.
+        let path = path.canonicalize().unwrap();
         Self { path }
     }
 
