@@ -323,6 +323,8 @@ impl DacPort for FakeDac {
                 wire_bytes(request.bit_depth),
                 rate,
             ),
+            usbdac_core::Encoding::PcmU8 => (WireEncoding::PcmU8, 8, 1, rate),
+            usbdac_core::Encoding::PcmFloat32 => (WireEncoding::PcmFloat32, 32, 4, rate),
             usbdac_core::Encoding::DoP => (WireEncoding::Dop, 24, 3, rate),
             usbdac_core::Encoding::DsdNative { bit_rate } => {
                 (WireEncoding::DsdNative { bit_rate }, 1, 4, bit_rate / 8)

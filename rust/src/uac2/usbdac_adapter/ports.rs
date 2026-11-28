@@ -30,7 +30,7 @@ pub(crate) struct AltFacts {
     pub endpoint_interval: u8,
     pub service_interval_us: u32,
     pub max_packet_bytes: usize,
-    /// `PCM`, `DSD` or `OTHER`.
+    /// `PCM`, `PCM8`, `IEEE_FLOAT`, `DOP`, `DSD` or `OTHER`.
     pub format_tag: &'static str,
     pub channels: u16,
     pub subslot_size: u8,
@@ -55,6 +55,10 @@ pub(crate) struct DacFacts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WireEncoding {
     Pcm,
+    /// Type I unsigned 8-bit PCM. Flick never requests it.
+    PcmU8,
+    /// Type I IEEE-754 binary32 PCM. Flick never requests it.
+    PcmFloat32,
     Dop,
     DsdNative { bit_rate: u32 },
 }
@@ -98,6 +102,8 @@ impl FormatFacts {
         Self {
             encoding: match format.encoding {
                 Encoding::Pcm => WireEncoding::Pcm,
+                Encoding::PcmU8 => WireEncoding::PcmU8,
+                Encoding::PcmFloat32 => WireEncoding::PcmFloat32,
                 Encoding::DoP => WireEncoding::Dop,
                 Encoding::DsdNative { bit_rate } => WireEncoding::DsdNative { bit_rate },
             },
@@ -563,6 +569,9 @@ fn usage_label(usage: EndpointUsage) -> &'static str {
 fn format_tag(format: AltFormat) -> &'static str {
     match format {
         AltFormat::Pcm => "PCM",
+        AltFormat::PcmU8 => "PCM8",
+        AltFormat::PcmFloat32 => "IEEE_FLOAT",
+        AltFormat::Dop => "DOP",
         AltFormat::Dsd => "DSD",
         _ => "OTHER",
     }

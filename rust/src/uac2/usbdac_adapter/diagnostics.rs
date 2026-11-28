@@ -308,7 +308,7 @@ fn build(snapshot: Snapshot) -> AndroidDirectUsbDebugState {
         return state;
     };
     let format = &active.format;
-    let dsd = !matches!(format.encoding, WireEncoding::Pcm);
+    let dsd = matches!(format.encoding, WireEncoding::Dop | WireEncoding::DsdNative { .. });
     // A stream that plays at a rate other than the one asked for is not
     // bit-perfect, whatever the library saw: the engine resamples to it.
     state.bit_perfect_verified = snapshot.bit_perfect && !resampling_active;

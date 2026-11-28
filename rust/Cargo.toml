@@ -44,7 +44,7 @@ rusb = { version = "0.9", optional = true }
 # Direct USB DAC output: the isochronous transport, clock, volume and loss
 # accounting live in the usbdac library; src/uac2/usbdac_adapter drives it.
 # Pin the published android-usbdac release for reproducible Android builds.
-usbdac-core = { version = "=0.1.5", optional = true }
+usbdac-core = { version = "=0.1.16", optional = true }
 
 # Async runtime for serialized engine initialization and UAC2 tasks
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros", "io-util"] }
