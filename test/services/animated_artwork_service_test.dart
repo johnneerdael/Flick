@@ -30,6 +30,13 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   late Directory cacheDir;
+  final services = <AnimatedArtworkService>[];
+
+  AnimatedArtworkService serviceWith(MockClient client) {
+    final service = AnimatedArtworkService.create(client: client);
+    services.add(service);
+    return service;
+  }
 
   setUp(() async {
     cacheDir = await Directory.systemTemp.createTemp('motion_art_test_');
@@ -41,6 +48,10 @@ void main() {
   });
 
   tearDown(() async {
+    for (final service in services) {
+      await service.drainPendingWrites();
+    }
+    services.clear();
     if (await cacheDir.exists()) {
       await cacheDir.delete(recursive: true);
     }
@@ -74,7 +85,7 @@ void main() {
         return _json({'error': 'unexpected $url'}, 500);
       });
 
-      final service = AnimatedArtworkService.create(client: client);
+      final service = serviceWith(client);
       final art = await service.getAnimatedArtworkForAlbum(
         albumName: 'DRIVE',
         artist: 'Tiësto',
@@ -134,7 +145,7 @@ void main() {
         return _json({'error': 'unexpected $url'}, 500);
       });
 
-      final service = AnimatedArtworkService.create(client: client);
+      final service = serviceWith(client);
       final art = await service.getAnimatedArtworkForAlbum(
         albumName: 'DRIVE',
         artist: 'Tiësto',
@@ -170,7 +181,7 @@ void main() {
         return _json({'error': 'unexpected $url'}, 500);
       });
 
-      final service = AnimatedArtworkService.create(client: client);
+      final service = serviceWith(client);
       final art = await service.getAnimatedArtworkForAlbum(
         albumName: 'DRIVE',
         artist: 'Tiësto',
@@ -212,7 +223,7 @@ void main() {
         return _json({'error': 'unexpected $url'}, 500);
       });
 
-      final service = AnimatedArtworkService.create(client: client);
+      final service = serviceWith(client);
       final art = await service.getAnimatedArtworkForAlbum(
         albumName: 'DRIVE',
         artist: 'Tiësto',
@@ -247,7 +258,7 @@ void main() {
         return _json({'error': 'unexpected $url'}, 500);
       });
 
-      final service = AnimatedArtworkService.create(client: client);
+      final service = serviceWith(client);
       final art = await service.getAnimatedArtworkForAlbum(
         albumName: 'DRIVE',
         artist: 'Tiësto',
@@ -281,7 +292,7 @@ void main() {
         return _json({'error': 'unexpected $url'}, 500);
       });
 
-      final service = AnimatedArtworkService.create(client: client);
+      final service = serviceWith(client);
       final art = await service.getAnimatedArtworkForAlbum(
         albumName: 'Alpha',
         artist: 'Someone',
@@ -330,7 +341,7 @@ void main() {
         return _json({'error': 'unexpected $url'}, 500);
       });
 
-      final service = AnimatedArtworkService.create(client: client);
+      final service = serviceWith(client);
       final art = await service.getAnimatedArtworkForAlbum(
         albumName: 'DRIVE',
         artist: 'Tiësto & Tate McRae',
@@ -373,7 +384,7 @@ void main() {
         return _json({'error': 'unexpected $url'}, 500);
       });
 
-      final service = AnimatedArtworkService.create(client: client);
+      final service = serviceWith(client);
       final first = await service.getAnimatedArtworkForAlbum(
         albumName: 'DRIVE',
         artist: 'Tiësto',
@@ -430,7 +441,7 @@ void main() {
         return _json({'error': 'unexpected $url'}, 500);
       });
 
-      final service = AnimatedArtworkService.create(client: client);
+      final service = serviceWith(client);
       final lookup = await service.lookupAnimatedArtworkForAlbum(
         albumName: 'DRIVE',
         artist: 'Tiësto',
@@ -461,7 +472,7 @@ void main() {
         return _json({'error': 'unexpected $url'}, 500);
       });
 
-      final service = AnimatedArtworkService.create(client: client);
+      final service = serviceWith(client);
       final first = await service.lookupAnimatedArtworkForAlbum(
         albumName: 'DRIVE',
         artist: 'Tiësto',
@@ -491,7 +502,7 @@ void main() {
         return _json({'error': 'not found'}, 404);
       });
 
-      final service = AnimatedArtworkService.create(client: client);
+      final service = serviceWith(client);
       await service.lookupAnimatedArtworkForAlbum(
         albumName: 'DRIVE',
         artist: 'Tiësto',
@@ -510,7 +521,7 @@ void main() {
         return _json({'resultCount': 0, 'results': []});
       });
 
-      final service = AnimatedArtworkService.create(client: client);
+      final service = serviceWith(client);
       await service.lookupAnimatedArtworkForAlbum(
         albumName: 'DRIVE',
         artist: 'Tiësto',

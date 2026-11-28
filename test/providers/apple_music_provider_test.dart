@@ -57,6 +57,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   late Directory cacheDir;
+  final caches = <AppleMusicCache>[];
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
@@ -64,15 +65,21 @@ void main() {
   });
 
   tearDown(() async {
+    for (final cache in caches) {
+      await cache.drainPendingWrites();
+    }
+    caches.clear();
     if (await cacheDir.exists()) {
       await cacheDir.delete(recursive: true);
     }
   });
 
   ProviderContainer containerWith(MockClient client) {
+    final cache = AppleMusicCache.forDirectory(cacheDir);
+    caches.add(cache);
     final service = AppleMusicMetadataService.create(
       client: client,
-      cache: AppleMusicCache.forDirectory(cacheDir),
+      cache: cache,
     );
     return ProviderContainer(
       overrides: [appleMusicMetadataServiceProvider.overrideWithValue(service)],

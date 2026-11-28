@@ -57,15 +57,15 @@ Map<String, dynamic> _track(String name, int seconds, int number) => {
   'trackTimeMillis': seconds * 1000,
 };
 
-AlbumIdentificationService _service(
-  MockClient client,
-  Directory cacheDir,
-) => AlbumIdentificationService.create(
-  metadata: AppleMusicMetadataService.create(
-    client: client,
-    cache: AppleMusicCache.forDirectory(cacheDir),
-  ),
-);
+final _caches = <AppleMusicCache>[];
+
+AlbumIdentificationService _service(MockClient client, Directory cacheDir) {
+  final cache = AppleMusicCache.forDirectory(cacheDir);
+  _caches.add(cache);
+  return AlbumIdentificationService.create(
+    metadata: AppleMusicMetadataService.create(client: client, cache: cache),
+  );
+}
 
 void main() {
   late Directory cacheDir;
@@ -74,7 +74,11 @@ void main() {
     cacheDir = Directory.systemTemp.createTempSync('apple_music_identify');
   });
 
-  tearDown(() {
+  tearDown(() async {
+    for (final cache in _caches) {
+      await cache.drainPendingWrites();
+    }
+    _caches.clear();
     if (cacheDir.existsSync()) {
       cacheDir.deleteSync(recursive: true);
     }

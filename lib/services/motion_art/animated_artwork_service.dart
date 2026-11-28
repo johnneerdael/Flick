@@ -186,6 +186,7 @@ class AnimatedArtworkService {
 
   final Map<String, _CacheEntry> _mem = {};
   final Map<String, Future<MotionArtLookup>> _inflight = {};
+  final Map<String, Future<void>> _pendingWrites = {};
 
   /// Per-key generation used to drop results of lookups that were invalidated
   /// while still in flight.
@@ -730,7 +731,17 @@ class AnimatedArtworkService {
       );
       _mem[key] = entry;
       // Only persist definitive outcomes; transient failures retry next launch.
-      if (!transient) unawaited(_writeDiskCache(key, entry));
+      if (!transient) {
+        final write = _writeDiskCache(key, entry);
+        _pendingWrites[key] = write;
+        unawaited(
+          write.whenComplete(() {
+            if (identical(_pendingWrites[key], write)) {
+              _pendingWrites.remove(key);
+            }
+          }),
+        );
+      }
       return MotionArtLookup(artwork: entry.artwork, transient: transient);
     }();
 
@@ -739,6 +750,11 @@ class AnimatedArtworkService {
       if (identical(_inflight[key], future)) _inflight.remove(key);
     });
   }
+
+  /// Completes once every disk write started so far has finished.
+  @visibleForTesting
+  Future<void> drainPendingWrites() =>
+      Future.wait(_pendingWrites.values.toList());
 
   int _epochFor(String key) => _epoch[key] ?? 0;
 
@@ -782,6 +798,9 @@ class AnimatedArtworkService {
   }
 
   Future<void> _deleteDiskCache(String key) async {
+    // A write still in flight would land after the delete and bring the
+    // stale entry back from disk.
+    await _pendingWrites[key];
     try {
       final file = File('${(await _cacheDir()).path}/$key.json');
       if (await file.exists()) await file.delete();

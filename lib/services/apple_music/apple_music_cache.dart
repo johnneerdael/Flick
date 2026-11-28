@@ -31,6 +31,7 @@ class AppleMusicCache {
 
   final Directory? _root;
   final Map<String, _CacheEntry> _mem = {};
+  final Set<Future<void>> _pendingWrites = {};
 
   /// Returns the cached value for [key], otherwise runs [loader].
   ///
@@ -81,10 +82,16 @@ class AppleMusicCache {
     );
     _mem[key] = entry;
     if (!transient) {
-      unawaited(_writeDisk(key, entry));
+      final write = _writeDisk(key, entry);
+      _pendingWrites.add(write);
+      unawaited(write.whenComplete(() => _pendingWrites.remove(write)));
     }
     return value;
   }
+
+  /// Completes once every disk write started so far has finished.
+  @visibleForTesting
+  Future<void> drainPendingWrites() => Future.wait(_pendingWrites.toList());
 
   T? _decode<T>(_CacheEntry entry, T Function(Map<String, dynamic>) decode) {
     final value = entry.value;

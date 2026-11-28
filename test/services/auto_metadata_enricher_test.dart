@@ -86,13 +86,16 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   late Directory tempDir;
+  final caches = <AppleMusicCache>[];
   late _RecordingRepository repository;
 
   AutoMetadataEnricher enricherWith(MockClient client) {
+    final cache = AppleMusicCache.forDirectory(tempDir);
+    caches.add(cache);
     final identification = AlbumIdentificationService.create(
       metadata: AppleMusicMetadataService.create(
         client: client,
-        cache: AppleMusicCache.forDirectory(tempDir),
+        cache: cache,
       ),
       repository: repository,
     );
@@ -127,6 +130,10 @@ void main() {
   });
 
   tearDown(() async {
+    for (final cache in caches) {
+      await cache.drainPendingWrites();
+    }
+    caches.clear();
     if (tempDir.existsSync()) {
       await tempDir.delete(recursive: true);
     }

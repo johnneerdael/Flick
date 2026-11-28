@@ -84,22 +84,27 @@ const _albumNotesHtml =
 
 void main() {
   late Directory cacheDir;
+  final caches = <AppleMusicCache>[];
 
   setUp(() async {
     cacheDir = await Directory.systemTemp.createTemp('apple_music_test_');
   });
 
   tearDown(() async {
+    for (final cache in caches) {
+      await cache.drainPendingWrites();
+    }
+    caches.clear();
     if (await cacheDir.exists()) {
       await cacheDir.delete(recursive: true);
     }
   });
 
-  AppleMusicMetadataService serviceWith(MockClient client) =>
-      AppleMusicMetadataService.create(
-        client: client,
-        cache: AppleMusicCache.forDirectory(cacheDir),
-      );
+  AppleMusicMetadataService serviceWith(MockClient client) {
+    final cache = AppleMusicCache.forDirectory(cacheDir);
+    caches.add(cache);
+    return AppleMusicMetadataService.create(client: client, cache: cache);
+  }
 
   group('resolveArtist', () {
     test('prefers an exact normalized name match', () async {
@@ -184,6 +189,7 @@ void main() {
 
       final first = serviceWith(client);
       expect((await first.resolveArtist('Aphex Twin'))?.artistId, '42');
+      await caches.single.drainPendingWrites();
 
       final second = serviceWith(client);
       final cached = await second.resolveArtist('Aphex Twin');
